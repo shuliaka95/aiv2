@@ -1,0 +1,15 @@
+билдить:
+DOCKER_BUILDKIT=1 docker build --no-cache -t modulation-classifier .
+
+для запуска генерации сигналов
+docker run --rm \
+    --runtime=nvidia \
+    -v $(pwd):/app \
+    modulation-classifier \
+    python3.10 verify_gen.py
+
+для самого обучения
+docker run --rm \
+    --runtime=nvidia \
+    -p 5000:5000 \
+    modulation-classifier

@@ -1,0 +1,103 @@
+/* Добавляем новые стили для вкладок и поля ввода */
+.tabs {
+    display: flex;
+    margin-bottom: 20px;
+    border-bottom: 2px solid #e0e0e0;
+}
+
+.tab-button {
+    flex: 1;
+    padding: 15px;
+    background: none;
+    border: none;
+    font-size: 1.1em;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    border-bottom: 3px solid transparent;
+}
+
+.tab-button.active {
+    background: #f8f9fa;
+    border-bottom: 3px solid #3498db;
+    font-weight: bold;
+}
+
+.tab-content {
+    display: none;
+}
+
+.tab-content.active {
+    display: block;
+    animation: fadeIn 0.5s ease;
+}
+
+.data-input-section {
+    margin-top: 20px;
+}
+
+.data-input {
+    width: 100%;
+    height: 300px;
+    padding: 15px;
+    border: 2px solid #ddd;
+    border-radius: 8px;
+    font-family: 'Courier New', monospace;
+    font-size: 14px;
+    resize: vertical;
+    background: #fafafa;
+}
+
+.data-input:focus {
+    border-color: #3498db;
+    outline: none;
+    background: white;
+}
+
+.data-info {
+    display: flex;
+    justify-content: space-between;
+    margin: 10px 0;
+    font-size: 0.9em;
+    color: #666;
+}
+
+.btn-secondary {
+    background: #6c757d;
+    color: white;
+}
+
+.btn-secondary:hover {
+    background: #545b62;
+}
+
+.network-item {
+    margin: 5px 0;
+    padding: 5px;
+    border-radius: 5px;
+    font-family: monospace;
+    font-size: 0.9em;
+}
+
+/* Адаптация для мобильных */
+@media (max-width: 768px) {
+    .tabs {
+        flex-direction: column;
+    }
+    
+    .tab-button {
+        margin-bottom: 5px;
+    }
+    
+    .data-input {
+        height: 200px;
+    }
+    
+    .connection-info {
+        font-size: 0.8em;
+    }
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}

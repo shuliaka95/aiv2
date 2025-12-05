@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>📡 Распознавание модуляций</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <h1>🎯 Распознавание типа модуляции</h1>
+            <p>Загрузите файл или введите данные сигнала для анализа</p>
+            <div class="connection-info">
+                {% for info in network_info %}
+                    <div class="network-item">{{ info|safe }}</div>
+                {% endfor %}
+                <div class="model-status {{ 'model-loaded' if model_loaded else 'model-demo' }}">
+                    Модель: {{ '✅ Обучена' if model_loaded else '⚠️ Демо' }}
+                </div>
+            </div>
+        </header>
+
+        <div class="content">
+            <!-- Табы для переключения между способами ввода -->
+            <div class="tabs">
+                <button class="tab-button active" onclick="switchTab('file-tab')">📁 Загрузка файла</button>
+                <button class="tab-button" onclick="switchTab('data-tab')">📊 Ввод данных</button>
+            </div>
+
+            <!-- Вкладка загрузки файла -->
+            <div id="file-tab" class="tab-content active">
+                <div class="info-card">
+                    <h3>📁 Загрузка файлов</h3>
+                    <ul>
+                        <li>🎵 <strong>WAV файлы</strong> - аудио сигналы</li>
+                        <li>📊 <strong>CSV/TXT файлы</strong> - данные в формате I,Q</li>
+                    </ul>
+                </div>
+
+                <div class="upload-section">
+                    <div class="upload-area" id="uploadArea">
+                        <div class="upload-icon">📁</div>
+                        <h3>Перетащите файл сюда или нажмите для выбора</h3>
+                        <p>Поддерживаемые форматы: WAV, CSV, TXT</p>
+                        <input type="file" id="fileInput" accept=".wav,.csv,.txt,.dat" hidden>
+                        <button class="btn btn-primary" onclick="document.getElementById('fileInput').click()">
+                            Выбрать файл
+                        </button>
+                    </div>
+                    
+                    <div id="fileInfo" class="file-info"></div>
+                    
+                    <button class="btn btn-analyze" id="analyzeBtn" onclick="analyzeFile()" disabled>
+                        🔍 Анализировать модуляцию
+                    </button>
+                </div>
+            </div>
+
+            <!-- Вкладка ввода данных -->
+            <div id="data-tab" class="tab-content">
+                <div class="info-card">
+                    <h3>📊 Ввод I/Q данных</h3>
+                    <p>Введите данные в формате: <code>I1, Q1</code> или <code>I1 Q1</code> на каждой строке</p>
+                    <div style="display: flex; gap: 10px; margin-top: 10px;">
+                        <button class="btn btn-secondary" onclick="loadTestData()">
+                            🧪 Загрузить тестовые данные
+                        </button>
+                        <button class="btn btn-secondary" onclick="clearData()">
+                            🗑️ Очистить
+                        </button>
+                    </div>
+                </div>
+
+                <div class="data-input-section">
+                    <textarea id="rawDataInput" class="data-input" placeholder="Введите I/Q данные здесь...
+Например:
+0.123, 0.456
+0.124, 0.457
+0.125, 0.458
+...
+Или используйте кнопку 'Загрузить тестовые данные'"></textarea>
+                    
+                    <div class="data-info">
+                        <span id="dataCount">Введено строк: 0</span>
+                        <span id="dataStatus"></span>
+                    </div>
+                    
+                    <button class="btn btn-analyze" id="analyzeDataBtn" onclick="analyzeRawData()" disabled>
+                        🔍 Анализировать данные
+                    </button>
+                </div>
+            </div>
+
+            <!-- Результаты -->
+            <div id="results" class="results-section" style="display: none;">
+                <h2>🎯 Результаты анализа</h2>
+                <div class="result-card">
+                    <div class="result-main">
+                        <span id="modulationResult" class="modulation-text"></span>
+                        <span id="confidenceResult" class="confidence-text"></span>
+                    </div>
+                    
+                    <div class="top-predictions">
+                        <h4>Топ предсказания:</h4>
+                        <div id="predictionsList"></div>
+                    </div>
+                    
+                    <div class="result-meta">
+                        <div id="fileMeta"></div>
+                        <div id="timeMeta"></div>
+                        <div id="modelMeta"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Статус -->
+            <div id="status" class="status"></div>
+        </div>
+
+        <footer class="footer">
+            <p>Система распознавания {{ modulations|length }} типов модуляций | 
+               <a href="/info">Информация о подключении</a>
+            </p>
+        </footer>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+</body>
+</html>

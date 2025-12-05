@@ -1,0 +1,80 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+new_venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Data and models - ВСЕ большие файлы!
+*.pth
+*.pt
+*.pkl
+*.h5
+*.hdf5
+*.onnx
+*.bin
+*.dat
+
+# Checkpoints
+checkpoint_epoch_*.pth
+best_model.pth
+model_25M_best.pth
+production_model.pth
+saved_model_full.pth
+
+# Data files
+RML2016.10a_dict.pkl
+*.npz
+*.npy
+*.csv
+*.parquet
+
+# Visualizations
+*.png
+*.jpg
+*.jpeg
+training_history.png
+confusion_matrix.png
+
+# Config and logs
+configs.yaml
+classification_report.json
+inference_stats.json
+logs/
+output/
+results/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# TorchSig cache
+.torchsig_cache/
+torchsig/

@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>📱 Modulation Recognition</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh; 
+            padding: 15px;
+            font-size: 16px;
+            -webkit-text-size-adjust: 100%;
+        }
+        .container {
+            max-width: 100%; 
+            margin: 0 auto; 
+            background: white; 
+            border-radius: 20px; 
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #2c3e50, #3498db);
+            color: white; 
+            padding: 25px 20px; 
+            text-align: center;
+        }
+        .header h1 { font-size: 1.4em; margin-bottom: 8px; font-weight: 600; }
+        .header p { opacity: 0.9; font-size: 0.9em; }
+        .content { padding: 20px; }
+        .card {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 15px;
+            margin: 15px 0;
+            border-left: 5px solid #3498db;
+        }
+        .btn {
+            display: block;
+            width: 100%;
+            padding: 18px;
+            margin: 12px 0;
+            border: none;
+            border-radius: 12px;
+            font-size: 1.1em;
+            font-weight: 600;
+            cursor: pointer;
+            text-align: center;
+            text-decoration: none;
+            transition: all 0.3s;
+            -webkit-tap-highlight-color: transparent;
+        }
+        .btn:active {
+            transform: scale(0.98);
+        }
+        .btn-primary { 
+            background: #3498db; 
+            color: white; 
+        }
+        .btn-success { 
+            background: #27ae60; 
+            color: white; 
+        }
+        .btn-test { 
+            background: #f39c12; 
+            color: white; 
+        }
+        .input-area {
+            width: 100%;
+            height: 200px;
+            padding: 15px;
+            border: 2px solid #ddd;
+            border-radius: 12px;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            resize: none;
+            background: #fafafa;
+            margin: 10px 0;
+        }
+        .status {
+            padding: 15px;
+            border-radius: 10px;
+            margin: 15px 0;
+            text-align: center;
+            display: none;
+        }
+        .success { background: #d4edda; color: #155724; }
+        .error { background: #f8d7da; color: #721c24; }
+        .processing { background: #fff3cd; color: #856404; }
+        .result {
+            background: white;
+            padding: 20px;
+            border-radius: 15px;
+            margin: 15px 0;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+            display: none;
+        }
+        .network-info {
+            background: #e9ecef;
+            padding: 12px;
+            border-radius: 10px;
+            margin: 10px 0;
+            font-size: 0.85em;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📡 Распознавание модуляций</h1>
+            <p>Простая версия для мобильных устройств</p>
+        </div>
+
+        <div class="content">
+            <!-- Тест подключения -->
+            <div class="card">
+                <h3>🔗 Проверка подключения</h3>
+                <p>Нажмите чтобы убедиться что сервер работает:</p>
+                <button class="btn btn-test" onclick="testConnection()">
+                    🔍 Тест подключения
+                </button>
+                <div id="testStatus" class="status"></div>
+            </div>
+
+            <!-- Быстрые ссылки -->
+            {% if available_ips %}
+            <div class="card">
+                <h3>🚀 Быстрый доступ</h3>
+                {% for ip_info in available_ips %}
+                    <a href="http://{{ ip_info.ip }}:5000" class="btn btn-primary">
+                        📲 Открыть {{ ip_info.ip }}
+                    </a>
+                {% endfor %}
+            </div>
+            {% endif %}
+
+            <!-- Ввод данных -->
+            <div class="card">
+                <h3>📊 Ввод I/Q данных</h3>
+                <p>Введите данные в формате:</p>
+                <p><code>I1, Q1</code> на каждой строке</p>
+                
+                <textarea id="dataInput" class="input-area" placeholder="0.123, 0.456
+0.124, 0.457
+0.125, 0.458
+..."></textarea>
+                
+                <div style="display: flex; gap: 10px;">
+                    <button class="btn btn-test" onclick="loadTestData()" style="flex: 1;">
+                        🧪 Тест данные
+                    </button>
+                    <button class="btn btn-success" onclick="analyzeData()" style="flex: 2;">
+                        🔍 Анализировать
+                    </button>
+                </div>
+            </div>
+
+            <!-- Результаты -->
+            <div id="result" class="result"></div>
+
+            <!-- Информация о сети -->
+            <div class="card">
+                <h3>🌐 Сетевые адреса</h3>
+                <div class="network-info">
+                    {% for info in network_info %}
+                        <div style="margin: 8px 0; padding: 8px; background: {% if info.status == 'available' %}#d4edda{% else %}#f8d7da{% endif %}; border-radius: 8px;">
+                            {{ info.message|safe }}
+                        </div>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <!-- Навигация -->
+            <div class="card">
+                <h3>🔧 Другие варианты</h3>
+                <a href="/" class="btn btn-primary">💻 Полная версия</a>
+                <a href="/fix" class="btn btn-test">🛠️ Исправления</a>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function testConnection() {
+            const status = document.getElementById('testStatus');
+            status.style.display = 'block';
+            status.className = 'status processing';
+            status.innerHTML = '🔄 Проверяем подключение...';
+            
+            try {
+                const response = await fetch('/api/phone_test', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        test: 'connection_test',
+                        device: 'iphone'
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.status === 'success') {
+                    status.className = 'status success';
+                    status.innerHTML = `
+                        ✅ <strong>Подключение успешно!</strong><br>
+                        📱 ${data.message}<br>
+                        ⏰ ${data.server_time}<br>
+                        🤖 Модель: ${data.model_loaded ? '✅ Готова' : '⚠️ Демо'}
+                    `;
+                } else {
+                    status.className = 'status error';
+                    status.innerHTML = '❌ Ошибка подключения';
+                }
+            } catch (error) {
+                status.className = 'status error';
+                status.innerHTML = `
+                    ❌ <strong>Ошибка сети!</strong><br>
+                    ${error.message}<br>
+                    🔧 Попробуйте:<br>
+                    - Другой браузер<br>
+                    - Адрес с /fix<br>
+                    - Проверить сеть Wi-Fi
+                `;
+            }
+        }
+
+        async function loadTestData() {
+            try {
+                const response = await fetch('/api/generate_test_data');
+                const data = await response.json();
+                
+                document.getElementById('dataInput').value = data.test_data;
+                
+                const status = document.getElementById('testStatus');
+                status.style.display = 'block';
+                status.className = 'status success';
+                status.innerHTML = `✅ Загружены тестовые данные (${data.samples} samples, ${data.modulation})`;
+            } catch (error) {
+                const status = document.getElementById('testStatus');
+                status.style.display = 'block';
+                status.className = 'status error';
+                status.innerHTML = '❌ Ошибка загрузки тестовых данных';
+            }
+        }
+
+        async function analyzeData() {
+            const rawData = document.getElementById('dataInput').value.trim();
+            
+            if (!rawData) {
+                const status = document.getElementById('testStatus');
+                status.style.display = 'block';
+                status.className = 'status error';
+                status.innerHTML = '❌ Введите данные для анализа';
+                return;
+            }
+            
+            const status = document.getElementById('testStatus');
+            status.style.display = 'block';
+            status.className = 'status processing';
+            status.innerHTML = '🔍 Анализируем данные...';
+            
+            try {
+                const response = await fetch('/api/analyze_raw', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        raw_data: rawData
+                    })
+                });
+                
+                const result = await response.json();
+                
+                if (result.status === 'success') {
+                    status.className = 'status success';
+                    status.innerHTML = '✅ Анализ завершен!';
+                    showResult(result);
+                } else {
+                    status.className = 'status error';
+                    status.innerHTML = '❌ Ошибка: ' + result.error;
+                }
+                
+            } catch (error) {
+                status.className = 'status error';
+                status.innerHTML = '❌ Ошибка сети: ' + error.message;
+            }
+        }
+
+        function showResult(data) {
+            const resultDiv = document.getElementById('result');
+            const result = data.result;
+            
+            resultDiv.innerHTML = `
+                <h3>🎯 Результат анализа</h3>
+                <div style="font-size: 1.3em; font-weight: bold; color: #2c3e50; margin: 10px 0;">
+                    ${result.modulation}
+                </div>
+                <div style="font-size: 1.1em; color: #27ae60; margin: 10px 0;">
+                    Уверенность: ${(result.confidence * 100).toFixed(2)}%
+                </div>
+                
+                <div style="margin: 15px 0;">
+                    <strong>Топ предсказания:</strong>
+                    ${result.top_predictions.map(pred => `
+                        <div style="display: flex; justify-content: space-between; padding: 8px; margin: 5px 0; background: #f8f9fa; border-radius: 8px;">
+                            <span>${pred.modulation}</span>
+                            <span style="font-weight: bold; color: #27ae60;">${(pred.confidence * 100).toFixed(2)}%</span>
+                        </div>
+                    `).join('')}
+                </div>
+                
+                <div style="font-size: 0.9em; color: #666; margin-top: 15px;">
+                    📊 Samples: ${data.signal_length} | 
+                    ⏰ ${data.timestamp} |
+                    🤖 ${data.model_loaded ? 'Обученная модель' : 'Демо-режим'}
+                </div>
+            `;
+            
+            resultDiv.style.display = 'block';
+            resultDiv.scrollIntoView({ behavior: 'smooth' });
+        }
+
+        // Авто-тест при загрузке
+        document.addEventListener('DOMContentLoaded', function() {
+            setTimeout(testConnection, 500);
+        });
+    </script>
+</body>
+</html>
