@@ -48,7 +48,8 @@ def train_model():
     # Инициализация данных
     train_loader, val_loader = get_dataloaders(
         batch_size=TRAIN_CONFIG['batch_size'],
-        num_iq_samples=NUM_IQ_SAMPLES
+        num_iq_samples=NUM_IQ_SAMPLES,
+        num_classes=NUM_CLASSES,
     )
     
     # Проверка данных
@@ -58,8 +59,8 @@ def train_model():
     print(f"Все метки < {NUM_CLASSES}? {test_batch[1].max().item() < NUM_CLASSES}")
     
     # Для IterableDataset используем фиксированное количество шагов
-    STEPS_PER_EPOCH = 250  # Увеличил для большей модели
-    VAL_STEPS = 75
+    STEPS_PER_EPOCH = 15000  # Увеличил для большей модели
+    VAL_STEPS = 1500
 
     # Инициализация модели
     model = MyCustomModel(num_classes=NUM_CLASSES).to(device)
@@ -72,17 +73,18 @@ def train_model():
     print(f"Пропорция обучаемых: {trainable_params/total_params:.2%}")
     
     # Функция потерь с label smoothing
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.15)  # Увеличил smoothing
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.3)  # Увеличил smoothing
     
     # Оптимизатор с большим weight decay
     optimizer = optim.AdamW(model.parameters(),
                           lr=TRAIN_CONFIG['learning_rate'],
-                          weight_decay=2e-3,  # Увеличил weight decay
-                          betas=(0.9, 0.999))
+                          weight_decay=1e-4,
+                          betas=(0.9, 0.999),
+                          eps=1e-8)
     
     # Комбинированные schedulers
-    scheduler_plateau = VerboseReduceLROnPlateau(optimizer, mode='max', factor=0.5,
-                                                patience=5, min_lr=1e-7)  # Больше patience
+    #scheduler_plateau = VerboseReduceLROnPlateau(optimizer, mode='max', factor=0.5,
+                                             #   patience=5, min_lr=1e-7)  # Больше patience
     scheduler_cosine = CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-7)
     
     # Цикл обучения
@@ -96,16 +98,98 @@ def train_model():
     
     # Для отслеживания прогресса
     train_iter = iter(train_loader)
+
+    #  CURRICULUM LEARNING ПЛАН
+    curriculum_phases = [
+        {'name': 'Фаза 1: Много шума (базовые признаки)',
+         'start_epoch': 0,
+         'end_epoch': 15,
+         'impairment': 1.0,
+         'steps': 8000,
+         'val_steps': 800},
+         
+        {'name': 'Фаза 2: Средний шум (тонкие различия)',
+         'start_epoch': 16,
+         'end_epoch': 35,
+         'impairment': 2.0,
+         'steps': 10000,
+         'val_steps': 1000},
+         
+        {'name': 'Фаза 3: Мало шума (максимальная точность)',
+         'start_epoch': 36,
+         'end_epoch': 70,
+         'impairment': 3.0,
+         'steps': 12000,
+         'val_steps': 1200}
+    ]
+    
+    print("\n" + "="*70)
+    print("🎯 CURRICULUM LEARNING ПЛАН:")
+    print("="*70)
+    for phase in curriculum_phases:
+        print(f"{phase['name']}:")
+        print(f"  Эпохи: {phase['start_epoch']+1}-{phase['end_epoch']}")
+        print(f"  Уровень шума: {phase['impairment']}")
+        print(f"  Шагов/эпоху: {phase['steps']:,}")
+        print(f"  Val шагов: {phase['val_steps']:,}")
+        print("-" * 70)
+    
+    # Сохраняем оригинальные загрузчики для первой фазы
+    original_train_loader = train_loader
+    original_val_loader = val_loader
+    
+    # ========== ОСНОВНОЙ ЦИКЛ ОБУЧЕНИЯ ==========
+    best_val_acc = 0.0
+    best_val_loss = float('inf')
+    patience_counter = 0
+    max_patience = 12
+    
+    train_losses, train_accs = [], []
+    val_losses, val_accs = [], []
+    
+    current_phase_idx = 0
+    current_phase = curriculum_phases[0]
     
     for epoch in range(epochs):
-        # === ОБУЧЕНИЕ ===
+        # ===== ОПРЕДЕЛЯЕМ ТЕКУЩУЮ ФАЗУ CURRICULUM =====
+        for i, phase in enumerate(curriculum_phases):
+            if phase['start_epoch'] <= epoch <= phase['end_epoch']:
+                if i != current_phase_idx:
+                    current_phase_idx = i
+                    current_phase = phase
+                    
+                    print(f"\n{'='*70}")
+                    print(f"🚀 ПЕРЕХОД НА: {current_phase['name']}")
+                    print(f"  Уровень шума: {current_phase['impairment']}")
+                    print(f"  Шагов/эпоху: {current_phase['steps']:,}")
+                    print(f"{'='*70}")
+                    
+                    # Освобождаем память
+                    del train_loader, val_loader
+                    torch.cuda.empty_cache()
+                    
+                    # Создаем новые загрузчики с новым уровнем шума
+                    train_loader, val_loader = get_dataloaders(
+                        batch_size=TRAIN_CONFIG['batch_size'],
+                        num_iq_samples=NUM_IQ_SAMPLES,
+                        num_classes=NUM_CLASSES,
+                        impairment_level=current_phase['impairment']
+                    )
+                break
+        
+        # Получаем параметры текущей фазы
+        phase_steps = current_phase['steps']
+        phase_val_steps = current_phase['val_steps']
+        
+        # ===== ОБУЧЕНИЕ =====
         model.train()
         running_loss = 0.0
         correct = 0
         total = 0
         
-        progress_bar = tqdm(range(STEPS_PER_EPOCH),
-                          desc=f"Эпоха {epoch+1}/{epochs}",
+        train_iter = iter(train_loader)
+        progress_bar = tqdm(range(phase_steps),
+                          desc=f"Эпоха {epoch+1}/{epochs} [{current_phase['name'][:15]}...]",
                           leave=False)
         
         for step in progress_bar:
@@ -123,17 +207,10 @@ def train_model():
             optimizer.zero_grad()
             outputs = model(inputs)
             loss = criterion(outputs, targets)
-            
-            # Добавляем L2 регуляризацию вручную
-            l2_lambda = 0.002  # Увеличил
-            l2_norm = sum(p.pow(2.0).sum() for p in model.parameters())
-            loss = loss + l2_lambda * l2_norm
-            
             loss.backward()
             
             # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.3)  # Уменьшил
-            
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.3)
             optimizer.step()
             
             running_loss += loss.item()
@@ -143,7 +220,7 @@ def train_model():
             correct += (predicted == targets).sum().item()
             
             # Обновление прогресс-бара
-            if step % 20 == 0:
+            if step % 50 == 0:
                 avg_loss = running_loss / (step + 1)
                 accuracy = 100 * correct / total if total > 0 else 0
                 progress_bar.set_postfix(
@@ -152,15 +229,15 @@ def train_model():
                     lr=f"{optimizer.param_groups[0]['lr']:.1e}"
                 )
         
-        epoch_loss = running_loss / STEPS_PER_EPOCH
+        epoch_loss = running_loss / phase_steps
         epoch_acc = 100 * correct / total if total > 0 else 0
         train_losses.append(epoch_loss)
         train_accs.append(epoch_acc)
         
-        # Обновление cosine scheduler
+        # Обновление scheduler
         scheduler_cosine.step()
         
-        # === ВАЛИДАЦИЯ ===
+        # ===== ВАЛИДАЦИЯ =====
         model.eval()
         val_correct = 0
         val_total = 0
@@ -168,7 +245,7 @@ def train_model():
         
         val_iter = iter(val_loader)
         with torch.no_grad():
-            for step in range(VAL_STEPS):
+            for step in range(phase_val_steps):
                 try:
                     inputs, targets = next(val_iter)
                 except StopIteration:
@@ -176,8 +253,6 @@ def train_model():
                     inputs, targets = next(val_iter)
                 
                 inputs, targets = inputs.to(device), targets.to(device)
-                
-                # Нормализация
                 inputs = (inputs - inputs.mean(dim=(0, 2), keepdim=True)) / (inputs.std(dim=(0, 2), keepdim=True) + 1e-8)
                 
                 outputs = model(inputs)
@@ -188,53 +263,25 @@ def train_model():
                 val_total += targets.size(0)
                 val_correct += (predicted == targets).sum().item()
         
-        val_loss = val_running_loss / VAL_STEPS
+        val_loss = val_running_loss / phase_val_steps
         val_acc = 100 * val_correct / val_total if val_total > 0 else 0
         val_losses.append(val_loss)
         val_accs.append(val_acc)
         
-        # === ВЫВОД СТАТИСТИКИ ===
+        # ===== ВЫВОД СТАТИСТИКИ =====
         print(f"\n{'='*70}")
-        print(f"Эпоха {epoch+1:3d}/{epochs}:")
-        print(f"  Обучение  - Потеря: {epoch_loss:.4f}, Точность: {epoch_acc:6.2f}%")
-        print(f"  Валидация - Потеря: {val_loss:.4f}, Точность: {val_acc:6.2f}%")
-        print(f"  LR: {optimizer.param_groups[0]['lr']:.2e}")
-        print(f"  Gap (train-val): {epoch_acc - val_acc:.1f}%")
+        print(f"Эпоха {epoch+1:3d}/{epochs} [{current_phase['name']}]")
+        print(f"  Обучение  - Loss: {epoch_loss:.4f}, Acc: {epoch_acc:6.2f}%")
+        print(f"  Валидация - Loss: {val_loss:.4f}, Acc: {val_acc:6.2f}%")
+        print(f"  LR: {optimizer.param_groups[0]['lr']:.2e}, Phase: {current_phase_idx+1}/3")
+        print(f"  Gap: {epoch_acc - val_acc:.1f}%")
         
-        # Обновление plateau scheduler
-        scheduler_plateau.step(val_acc)
-        
-        # Проверка на переобучение
-        overfitting_warning = ""
-        
-        if epoch >= 5:
-            # Разрыв между train и val accuracy
-            if epoch_acc - val_acc > 12:  # Уменьшил порог
-                overfitting_warning = f" ⚠️  Разрыв train-val: {epoch_acc-val_acc:.1f}%"
-            
-            # Растущая val loss
-            if len(val_losses) >= 4 and all(val_losses[-i] > val_losses[-(i+1)] for i in range(1, 3)):
-                overfitting_warning = " ⚠️  Val loss растет 2 эпохи подряд!"
-            
-            # Падающая val accuracy
-            if len(val_accs) >= 4 and all(val_accs[-i] < val_accs[-(i+1)] for i in range(1, 3)):
-                overfitting_warning = " ⚠️  Val accuracy падает 2 эпохи подряд!"
-        
-        if overfitting_warning:
-            print(f"  {overfitting_warning}")
-            
-            # Автоматическое увеличение dropout при переобучении
-            if hasattr(model, 'classifier'):
-                for module in model.classifier:
-                    if isinstance(module, nn.Dropout):
-                        if module.p < 0.8:  # Максимум 80%
-                            module.p = min(0.8, module.p + 0.03)
-                            print(f"  ↻ Увеличен Dropout: {module.p-0.03:.2f} → {module.p:.2f}")
-        
-        # Сохранение лучшей модели
+        # ===== СОХРАНЕНИЕ МОДЕЛИ =====
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             best_val_loss = val_loss
+            patience_counter = 0
+            
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
@@ -243,54 +290,46 @@ def train_model():
                 'val_loss': val_loss,
                 'train_acc': epoch_acc,
                 'train_loss': epoch_loss,
-                'config': {
-                    'num_classes': NUM_CLASSES,
-                    'learning_rate': TRAIN_CONFIG['learning_rate'],
-                    'batch_size': TRAIN_CONFIG['batch_size']
-                }
+                'phase': current_phase_idx + 1,
+                'impairment': current_phase['impairment']
             }, model_save_path)
-            print(f"  ✓ Сохранена лучшая модель (точность: {val_acc:.2f}%)")
-            patience_counter = 0
+            
+            print(f"  💾 Сохранена лучшая модель (Acc: {val_acc:.2f}%, Phase: {current_phase_idx+1})")
         else:
             patience_counter += 1
             print(f"  ⏳ Без улучшений: {patience_counter}/{max_patience}")
         
-        # Сохранение чекпоинта
-        if (epoch + 1) % 10 == 0:
-            checkpoint_path = f"checkpoint_epoch_{epoch+1}.pth"
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'train_acc': epoch_acc,
-                'val_acc': val_acc,
-                'train_loss': epoch_loss,
-                'val_loss': val_loss,
-            }, checkpoint_path)
-            print(f"  💾 Чекпоинт: {checkpoint_path}")
-        
-        # Ранняя остановка
+        # ===== РАННЯЯ ОСТАНОВКА =====
         if patience_counter >= max_patience:
             print(f"\n{'='*70}")
             print(f"⚠️  РАННЯЯ ОСТАНОВКА на эпохе {epoch+1}")
-            print(f"   Точность не улучшалась {max_patience} эпох")
+            print(f"   Фаза: {current_phase['name']}")
             print(f"   Лучшая точность: {best_val_acc:.2f}%")
             break
         
-        # Прогресс каждые 20 эпох
-        if (epoch + 1) % 20 == 0:
-            print(f"\n  === ПРОГРЕСС ЧЕРЕЗ {epoch+1} ЭПОХ ===")
-            print(f"  Train accuracy: {train_accs[0]:.1f}% → {epoch_acc:.1f}%")
-            print(f"  Val accuracy: {val_accs[0]:.1f}% → {val_acc:.1f}%")
-            print(f"  Средний gap: {np.mean([t-v for t,v in zip(train_accs[-10:], val_accs[-10:])]):.1f}%")
-
-    # Финальная статистика
-    print(f"\n{'='*70}")
-    print(f"ОБУЧЕНИЕ ЗАВЕРШЕНО")
-    print(f"Лучшая точность на валидации: {best_val_acc:.2f}%")
-    print(f"Лучшая потеря на валидации: {best_val_loss:.4f}")
-    print(f"Всего эпох: {len(train_accs)}")
+        # ===== ПРОГРЕСС КАЖДЫЕ 10 ЭПОХ =====
+        if (epoch + 1) % 10 == 0:
+            print(f"\n  📊 Прогресс через {epoch+1} эпох:")
+            print(f"  Текущая фаза: {current_phase['name']}")
+            print(f"  Средний Loss (последние 10): {np.mean(train_losses[-10:]):.4f}")
+            print(f"  Средний Acc (последние 10): {np.mean(train_accs[-10:]):.2f}%")
     
+    # ===== ФИНАЛЬНАЯ СТАТИСТИКА =====
+    print(f"\n{'='*70}")
+    print(f"🏁 ОБУЧЕНИЕ ЗАВЕРШЕНО")
+    print(f"Всего эпох: {len(train_accs)}")
+    print(f"Лучшая точность: {best_val_acc:.2f}%")
+    print(f"Лучший Loss: {best_val_loss:.4f}")
+    print(f"{'='*70}")
+    
+    # Загрузка лучшей модели для финального теста
+    if os.path.exists(model_save_path):
+        checkpoint = torch.load(model_save_path)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        print(f"\n📦 Загружена лучшая модель:")
+        print(f"  Эпоха: {checkpoint['epoch']+1}")
+        print(f"  Фаза: {checkpoint['phase']}")
+        print(f"  Accuracy: {checkpoint['val_acc']:.2f}%")
     # Анализ переобучения
     if len(train_accs) > 10:
         final_gap = train_accs[-1] - val_accs[-1]

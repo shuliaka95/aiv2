@@ -2,7 +2,7 @@
 import torch
 import numpy as np
 
-NUM_CLASSES = 58
+NUM_CLASSES = 57
 NUM_IQ_SAMPLES = 1024
 
 MODEL_CONFIG = {
@@ -13,7 +13,7 @@ MODEL_CONFIG = {
 
 TRAIN_CONFIG = {
     'batch_size': 32,           # Оптимально для 25M
-    'learning_rate': 0.0003,    # Средний learning rate
-    'num_epochs': 150,          # Достаточно эпох
+    'learning_rate': 0.0001,    # Средний learning rate
+    'num_epochs': 70,          # Достаточно эпох
     'device': torch.device("cuda" if torch.cuda.is_available() else "cpu")
 }
