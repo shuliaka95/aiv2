@@ -24,7 +24,7 @@ class ResidualBlock(nn.Module):
                 nn.BatchNorm1d(out_channels)
             )
         
-        self.dropout = nn.Dropout1d(p=0.1)
+        self.dropout = nn.Dropout1d(p=0.6)
 
     def forward(self, x):
         residual = self.shortcut(x)
@@ -52,7 +52,7 @@ class ModulationNet25M(nn.Module):
             nn.BatchNorm1d(64),
             nn.ReLU(inplace=True),
             nn.MaxPool1d(kernel_size=3, stride=2, padding=1),
-            nn.Dropout1d(p=0.1)
+            nn.Dropout1d(p=0.55)
         )
 
         # Основные ResNet слои
@@ -67,22 +67,22 @@ class ModulationNet25M(nn.Module):
         
         # Сбалансированный классификатор
         self.classifier = nn.Sequential(
-            nn.Dropout(p=0.5),
+            nn.Dropout(p=0.55),
             
             nn.Linear(512 * 2, 2048),  # *2 из-за avg + max pooling
             nn.BatchNorm1d(2048),
             nn.ReLU(inplace=True),
-            nn.Dropout(p=0.4),
+            nn.Dropout(p=0.45),
             
             nn.Linear(2048, 1024),
             nn.BatchNorm1d(1024),
             nn.ReLU(inplace=True),
-            nn.Dropout(p=0.3),
+            nn.Dropout(p=0.35),
             
             nn.Linear(1024, 512),
             nn.BatchNorm1d(512),
             nn.ReLU(inplace=True),
-            nn.Dropout(p=0.2),
+            nn.Dropout(p=0.25),
             
             nn.Linear(512, num_classes)
         )
@@ -142,7 +142,7 @@ class Compact25MNet(nn.Module):
             nn.BatchNorm1d(96),
             nn.ReLU(inplace=True),
             nn.MaxPool1d(3, stride=2, padding=1),
-            nn.Dropout1d(0.1),
+            nn.Dropout1d(0.5),
             
             # Stage 2
             nn.Conv1d(96, 192, 3, padding=1, bias=False),
@@ -152,7 +152,7 @@ class Compact25MNet(nn.Module):
             nn.BatchNorm1d(192),
             nn.ReLU(inplace=True),
             nn.MaxPool1d(2, stride=2),
-            nn.Dropout1d(0.15),
+            nn.Dropout1d(0.5),
             
             # Stage 3
             nn.Conv1d(192, 384, 3, padding=1, bias=False),
@@ -165,7 +165,7 @@ class Compact25MNet(nn.Module):
             nn.BatchNorm1d(384),
             nn.ReLU(inplace=True),
             nn.MaxPool1d(2, stride=2),
-            nn.Dropout1d(0.2),
+            nn.Dropout1d(0.5),
             
             # Stage 4
             nn.Conv1d(384, 768, 3, padding=1, bias=False),
@@ -175,7 +175,7 @@ class Compact25MNet(nn.Module):
             nn.BatchNorm1d(768),
             nn.ReLU(inplace=True),
             nn.MaxPool1d(2, stride=2),
-            nn.Dropout1d(0.25),
+            nn.Dropout1d(0.5),
             
             # Stage 5
             nn.Conv1d(768, 768, 3, padding=1, bias=False),
@@ -192,17 +192,17 @@ class Compact25MNet(nn.Module):
             nn.Linear(768, 2048),
             nn.BatchNorm1d(2048),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.4),
+            nn.Dropout(0.55),
             
             nn.Linear(2048, 1024),
             nn.BatchNorm1d(1024),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.3),
+            nn.Dropout(0.45),
             
             nn.Linear(1024, 512),
             nn.BatchNorm1d(512),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.2),
+            nn.Dropout(0.35),
             
             nn.Linear(512, num_classes)
         )

@@ -52,14 +52,60 @@ def train_model():
         num_classes=NUM_CLASSES,
     )
     
+    print("\n🔍 Проверка корректности данных:")
+    print("=" * 50)
+    
+    # ВАЖНО: Используем iter() и next() для безопасной проверки
+    try:
+        train_iter = iter(train_loader)
+        
+        for i in range(3):  # Проверяем только 3 батча
+            try:
+                data, labels = next(train_iter)
+                print(f"Батч {i+1}:")
+                print(f"  Данные: shape={data.shape}, dtype={data.dtype}")
+                print(f"  Метки: {labels.tolist()[:10]}...")  # Первые 10 меток
+                print(f"  Уникальные метки: {torch.unique(labels).tolist()}")
+                print()
+            except StopIteration:
+                break
+        
+        # Проверяем диапазон меток на большем количестве данных
+        print("Проверка диапазона меток...")
+        train_iter = iter(train_loader)
+        all_labels = []
+        
+        for i in range(20):  # Проверяем 20 батчей
+            try:
+                data, labels = next(train_iter)
+                all_labels.append(labels)
+            except StopIteration:
+                break
+        
+        if all_labels:
+            all_labels = torch.cat(all_labels)
+            print(f"  Проверено меток: {len(all_labels)}")
+            print(f"  Диапазон меток: [{all_labels.min().item()}, {all_labels.max().item()}]")
+            print(f"  Все метки < {NUM_CLASSES}? {all_labels.max().item() < NUM_CLASSES}")
+            print(f"  Распределение: {torch.bincount(all_labels).tolist()[:10]}...")
+        else:
+            print("  Не удалось получить данные для проверки")
+            
+    except Exception as e:
+        print(f"Ошибка при проверке данных: {e}")
+        print("Продолжаем обучение, но возможны проблемы с метками")
+    
+    print("=" * 50)
+    print()
+    
     # Проверка данных
     test_batch = next(iter(train_loader))
     print(f"Форма данных: {test_batch[0].shape}")
     print(f"Диапазон меток: [{test_batch[1].min().item()}, {test_batch[1].max().item()}]")
     print(f"Все метки < {NUM_CLASSES}? {test_batch[1].max().item() < NUM_CLASSES}")
     
-    # Для IterableDataset используем фиксированное количество шагов
-    STEPS_PER_EPOCH = 15000  # Увеличил для большей модели
+    # используем фиксированное количество шагов
+    STEPS_PER_EPOCH = 15000
     VAL_STEPS = 1500
 
     # Инициализация модели
@@ -73,12 +119,12 @@ def train_model():
     print(f"Пропорция обучаемых: {trainable_params/total_params:.2%}")
     
     # Функция потерь с label smoothing
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.3)  # Увеличил smoothing
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.45)
     
     # Оптимизатор с большим weight decay
     optimizer = optim.AdamW(model.parameters(),
                           lr=TRAIN_CONFIG['learning_rate'],
-                          weight_decay=1e-4,
+                          weight_decay=7e-4,
                           betas=(0.9, 0.999),
                           eps=1e-8)
     
@@ -103,24 +149,24 @@ def train_model():
     curriculum_phases = [
         {'name': 'Фаза 1: Много шума (базовые признаки)',
          'start_epoch': 0,
-         'end_epoch': 15,
+         'end_epoch': 24,
          'impairment': 1.0,
-         'steps': 8000,
-         'val_steps': 800},
+         'steps': 10000,
+         'val_steps': 2500},
          
         {'name': 'Фаза 2: Средний шум (тонкие различия)',
-         'start_epoch': 16,
-         'end_epoch': 35,
+         'start_epoch': 25,
+         'end_epoch': 49,
          'impairment': 2.0,
-         'steps': 10000,
-         'val_steps': 1000},
+         'steps': 12000,
+         'val_steps': 3000},
          
         {'name': 'Фаза 3: Мало шума (максимальная точность)',
-         'start_epoch': 36,
+         'start_epoch': 50,
          'end_epoch': 70,
          'impairment': 3.0,
-         'steps': 12000,
-         'val_steps': 1200}
+         'steps': 15000,
+         'val_steps': 3750}
     ]
     
     print("\n" + "="*70)
@@ -128,7 +174,7 @@ def train_model():
     print("="*70)
     for phase in curriculum_phases:
         print(f"{phase['name']}:")
-        print(f"  Эпохи: {phase['start_epoch']+1}-{phase['end_epoch']}")
+        print(f"  Эпохи: {phase['start_epoch']+1}-{phase['end_epoch']+1}") 
         print(f"  Уровень шума: {phase['impairment']}")
         print(f"  Шагов/эпоху: {phase['steps']:,}")
         print(f"  Val шагов: {phase['val_steps']:,}")
@@ -152,20 +198,28 @@ def train_model():
     
     for epoch in range(epochs):
         # ===== ОПРЕДЕЛЯЕМ ТЕКУЩУЮ ФАЗУ CURRICULUM =====
+        current_phase_found = False
+        
+        # ПРЯМОЙ ПОИСК: какая фаза соответствует текущей эпохе
         for i, phase in enumerate(curriculum_phases):
             if phase['start_epoch'] <= epoch <= phase['end_epoch']:
+                # Нашли фазу для этой эпохи
                 if i != current_phase_idx:
+                    # НОВАЯ ФАЗА - выполняем переход
                     current_phase_idx = i
                     current_phase = phase
+                    current_phase_found = True
                     
                     print(f"\n{'='*70}")
                     print(f"🚀 ПЕРЕХОД НА: {current_phase['name']}")
                     print(f"  Уровень шума: {current_phase['impairment']}")
                     print(f"  Шагов/эпоху: {current_phase['steps']:,}")
+                    print(f"  Эпохи: {phase['start_epoch']+1}-{phase['end_epoch']+1}")
                     print(f"{'='*70}")
                     
                     # Освобождаем память
-                    del train_loader, val_loader
+                    if 'train_loader' in locals():
+                        del train_loader, val_loader
                     torch.cuda.empty_cache()
                     
                     # Создаем новые загрузчики с новым уровнем шума
@@ -175,7 +229,24 @@ def train_model():
                         num_classes=NUM_CLASSES,
                         impairment_level=current_phase['impairment']
                     )
-                break
+                else:
+                    # Та же фаза, ничего не меняем
+                    current_phase_found = True
+                break  # Выходим из цикла после нахождения фазы
+        
+        # ЗАЩИТА ОТ ОШИБОК: если фаза не найдена (на всякий случай)
+        if not current_phase_found:
+            # Выбираем фазу по умолчанию (последнюю)
+            if epoch > curriculum_phases[-1]['end_epoch']:
+                current_phase_idx = len(curriculum_phases) - 1
+            elif epoch < curriculum_phases[0]['start_epoch']:
+                current_phase_idx = 0
+            current_phase = curriculum_phases[current_phase_idx]
+            print(f"⚠️  Эпоха {epoch+1} вне диапазона фаз, использую {current_phase['name']}")
+        
+        # Получаем параметры текущей фазы
+        phase_steps = current_phase['steps']
+        phase_val_steps = current_phase['val_steps']
         
         # Получаем параметры текущей фазы
         phase_steps = current_phase['steps']
@@ -210,7 +281,7 @@ def train_model():
             loss.backward()
             
             # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.3)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
             optimizer.step()
             
             running_loss += loss.item()
