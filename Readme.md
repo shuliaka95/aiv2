@@ -17,7 +17,11 @@
 git clone https://github.com/shuliaka95/aiv2.git
 cd aiv2
 
-# Установить зависимостиS
+# Настроить виртальное окружение
+python -m venv venv
+source venv/bin/activate # Для линукса 
+
+# Установить зависимости
 pip install -r requirements.txt
 #скачать torchsig
 git clone https://github.com/TorchDSP/torchsig.git
