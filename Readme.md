@@ -5,7 +5,7 @@
 ## Особенности
 
 - Классификация 58 типов модуляций
-- Архитектура ResNet на 25 млн параметров
+- Архитектура ResNet на 15 млн параметров
 - Обучение с защитой от переобучения
 - Поддержка GPU/CPU
 - Готовность к продакшену
@@ -20,3 +20,7 @@ cd modulation_classifier
 # Установить зависимости
 pip install -r requirements.txt
 #скачать torchsig
+git clone https://github.com/TorchDSP/torchsig.git
+cd torchsig
+pip install -e .
+
