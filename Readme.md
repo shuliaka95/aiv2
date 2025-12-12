@@ -14,8 +14,8 @@
 
 ```bash
 # Клонировать репозиторий
-git clone https://github.com/ваш-username/modulation_classifier.git
-cd modulation_classifier
+git clone https://github.com/shuliaka95/aiv2.git
+cd aiv2
 
 # Установить зависимости
 pip install -r requirements.txt
