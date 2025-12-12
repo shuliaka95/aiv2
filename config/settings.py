@@ -13,7 +13,7 @@ MODEL_CONFIG = {
 
 TRAIN_CONFIG = {
     'batch_size': 32,       
-    'learning_rate': 0.000055,    
+    'learning_rate': 0.0001,    
     'num_epochs': 70,      
     'device': torch.device("cuda" if torch.cuda.is_available() else "cpu")
 }

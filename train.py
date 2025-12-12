@@ -119,19 +119,19 @@ def train_model():
     print(f"Пропорция обучаемых: {trainable_params/total_params:.2%}")
     
     # Функция потерь с label smoothing
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.45)
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.3)
     
     # Оптимизатор с большим weight decay
     optimizer = optim.AdamW(model.parameters(),
                           lr=TRAIN_CONFIG['learning_rate'],
-                          weight_decay=7e-4,
+                          weight_decay=5e-4,
                           betas=(0.9, 0.999),
                           eps=1e-8)
     
     # Комбинированные schedulers
-    #scheduler_plateau = VerboseReduceLROnPlateau(optimizer, mode='max', factor=0.5,
-                                             #   patience=5, min_lr=1e-7)  # Больше patience
-    scheduler_cosine = CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-7)
+    scheduler_plateau = VerboseReduceLROnPlateau(optimizer, mode='max', factor=0.5,
+                                                patience=5, min_lr=1e-6)
+    #scheduler_cosine = CosineAnnealingLR(optimizer, T_max=epochs *2, eta_min=1e-7)
     
     # Цикл обучения
     best_val_acc = 0.0
@@ -305,9 +305,6 @@ def train_model():
         train_losses.append(epoch_loss)
         train_accs.append(epoch_acc)
         
-        # Обновление scheduler
-        scheduler_cosine.step()
-        
         # ===== ВАЛИДАЦИЯ =====
         model.eval()
         val_correct = 0
@@ -338,6 +335,8 @@ def train_model():
         val_acc = 100 * val_correct / val_total if val_total > 0 else 0
         val_losses.append(val_loss)
         val_accs.append(val_acc)
+        
+        scheduler_plateau.step(val_acc)
         
         # ===== ВЫВОД СТАТИСТИКИ =====
         print(f"\n{'='*70}")

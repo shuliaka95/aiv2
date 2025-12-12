@@ -52,7 +52,7 @@ class ModulationNet25M(nn.Module):
             nn.BatchNorm1d(64),
             nn.ReLU(inplace=True),
             nn.MaxPool1d(kernel_size=3, stride=2, padding=1),
-            nn.Dropout1d(p=0.55)
+            nn.Dropout1d(p=0.5)
         )
 
         # Основные ResNet слои
@@ -67,17 +67,17 @@ class ModulationNet25M(nn.Module):
         
         # Сбалансированный классификатор
         self.classifier = nn.Sequential(
-            nn.Dropout(p=0.55),
+            nn.Dropout(p=0.5),
             
             nn.Linear(512 * 2, 2048),  # *2 из-за avg + max pooling
             nn.BatchNorm1d(2048),
             nn.ReLU(inplace=True),
-            nn.Dropout(p=0.45),
+            nn.Dropout(p=0.4),
             
             nn.Linear(2048, 1024),
             nn.BatchNorm1d(1024),
             nn.ReLU(inplace=True),
-            nn.Dropout(p=0.35),
+            nn.Dropout(p=0.3),
             
             nn.Linear(1024, 512),
             nn.BatchNorm1d(512),

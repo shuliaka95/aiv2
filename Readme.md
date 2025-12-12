@@ -17,7 +17,7 @@
 git clone https://github.com/shuliaka95/aiv2.git
 cd aiv2
 
-# Установить зависимости
+# Установить зависимостиS
 pip install -r requirements.txt
 #скачать torchsig
 git clone https://github.com/TorchDSP/torchsig.git
