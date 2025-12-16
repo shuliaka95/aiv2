@@ -2,286 +2,292 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import timm
+from torch import Tensor
+import matplotlib.pyplot as plt
+import numpy as np
+import os
 
-class ResidualBlock(nn.Module):
-    """Оптимальный Residual блок для 25M модели."""
-    def __init__(self, in_channels, out_channels, stride=1):
-        super(ResidualBlock, self).__init__()
-        
-        self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size=3, 
-                               stride=stride, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm1d(out_channels)
-        self.relu = nn.ReLU(inplace=True)
-        self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size=3, 
-                               stride=1, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm1d(out_channels)
-        
-        self.shortcut = nn.Sequential()
-        if stride != 1 or in_channels != out_channels:
-            self.shortcut = nn.Sequential(
-                nn.Conv1d(in_channels, out_channels, kernel_size=1, 
-                          stride=stride, bias=False),
-                nn.BatchNorm1d(out_channels)
-            )
-        
-        self.dropout = nn.Dropout1d(p=0.6)
-
-    def forward(self, x):
-        residual = self.shortcut(x)
-        
-        out = self.conv1(x)
-        out = self.bn1(out)
-        out = self.relu(out)
-        out = self.dropout(out)
-        
-        out = self.conv2(out)
-        out = self.bn2(out)
-        out += residual
-        out = self.relu(out)
-        
-        return out
-
-class ModulationNet25M(nn.Module):
-    """Оптимальная модель на ~25 млн параметров для 58 классов модуляций."""
-    def __init__(self, num_classes=58):
-        super(ModulationNet25M, self).__init__()
-        
-        # Начальные слои
-        self.init_conv = nn.Sequential(
-            nn.Conv1d(2, 64, kernel_size=7, stride=2, padding=3, bias=False),
-            nn.BatchNorm1d(64),
-            nn.ReLU(inplace=True),
-            nn.MaxPool1d(kernel_size=3, stride=2, padding=1),
-            nn.Dropout1d(p=0.5)
-        )
-
-        # Основные ResNet слои
-        self.layer1 = self._make_layer(64, 128, num_blocks=2, stride=2)    # 1024 -> 256
-        self.layer2 = self._make_layer(128, 256, num_blocks=3, stride=2)   # 256 -> 128
-        self.layer3 = self._make_layer(256, 512, num_blocks=4, stride=2)   # 128 -> 64
-        self.layer4 = self._make_layer(512, 512, num_blocks=2, stride=2)   # 64 -> 32
-        
-        # Глобальное pooling
-        self.avgpool = nn.AdaptiveAvgPool1d(1)
-        self.maxpool = nn.AdaptiveMaxPool1d(1)
-        
-        # Сбалансированный классификатор
-        self.classifier = nn.Sequential(
-            nn.Dropout(p=0.5),
-            
-            nn.Linear(512 * 2, 2048),  # *2 из-за avg + max pooling
-            nn.BatchNorm1d(2048),
-            nn.ReLU(inplace=True),
-            nn.Dropout(p=0.4),
-            
-            nn.Linear(2048, 1024),
-            nn.BatchNorm1d(1024),
-            nn.ReLU(inplace=True),
-            nn.Dropout(p=0.3),
-            
-            nn.Linear(1024, 512),
-            nn.BatchNorm1d(512),
-            nn.ReLU(inplace=True),
-            nn.Dropout(p=0.25),
-            
-            nn.Linear(512, num_classes)
-        )
-        
-        self._initialize_weights()
-    
-    def _make_layer(self, in_channels, out_channels, num_blocks, stride):
-        layers = []
-        layers.append(ResidualBlock(in_channels, out_channels, stride=stride))
-        
-        for _ in range(1, num_blocks):
-            layers.append(ResidualBlock(out_channels, out_channels, stride=1))
-            
-        return nn.Sequential(*layers)
-
-    def _initialize_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Conv1d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.BatchNorm1d):
-                nn.init.constant_(m.weight, 1)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.Linear):
-                nn.init.kaiming_uniform_(m.weight, mode='fan_in', nonlinearity='relu')
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-
-    def forward(self, x):
-        # Вход: [batch, 2, 1024]
-        x = self.init_conv(x)      # [batch, 64, 256]
-        x = self.layer1(x)         # [batch, 128, 128]
-        x = self.layer2(x)         # [batch, 256, 64]
-        x = self.layer3(x)         # [batch, 512, 32]
-        x = self.layer4(x)         # [batch, 512, 16]
-        
-        # Комбинированное pooling
-        avg_out = self.avgpool(x).squeeze(-1)  # [batch, 512]
-        max_out = self.maxpool(x).squeeze(-1)  # [batch, 512]
-        x = torch.cat([avg_out, max_out], dim=1)  # [batch, 1024]
-        
-        x = self.classifier(x)
-        
-        return x
-
-# Альтернативная компактная модель если нужна точная настройка
-class Compact25MNet(nn.Module):
-    """Компактная модель на ~25M параметров."""
-    def __init__(self, num_classes=58):
+class XCiT1d(nn.Module):
+    def __init__(
+        self,
+        input_channels: int = 2,
+        num_classes: int = 57,
+        xcit_version: str = "small_12_p16_224",
+        drop_path_rate: float = 0.15,
+        drop_rate: float = 0.5,
+        ds_method: str = "chunk",
+        ds_rate: int = 4
+    ):
         super().__init__()
         
-        self.features = nn.Sequential(
-            # Stage 1
-            nn.Conv1d(2, 96, 7, stride=2, padding=3, bias=False),
-            nn.BatchNorm1d(96),
-            nn.ReLU(inplace=True),
-            nn.MaxPool1d(3, stride=2, padding=1),
-            nn.Dropout1d(0.5),
-            
-            # Stage 2
-            nn.Conv1d(96, 192, 3, padding=1, bias=False),
-            nn.BatchNorm1d(192),
-            nn.ReLU(inplace=True),
-            nn.Conv1d(192, 192, 3, padding=1, bias=False),
-            nn.BatchNorm1d(192),
-            nn.ReLU(inplace=True),
-            nn.MaxPool1d(2, stride=2),
-            nn.Dropout1d(0.5),
-            
-            # Stage 3
-            nn.Conv1d(192, 384, 3, padding=1, bias=False),
-            nn.BatchNorm1d(384),
-            nn.ReLU(inplace=True),
-            nn.Conv1d(384, 384, 3, padding=1, bias=False),
-            nn.BatchNorm1d(384),
-            nn.ReLU(inplace=True),
-            nn.Conv1d(384, 384, 3, padding=1, bias=False),
-            nn.BatchNorm1d(384),
-            nn.ReLU(inplace=True),
-            nn.MaxPool1d(2, stride=2),
-            nn.Dropout1d(0.5),
-            
-            # Stage 4
-            nn.Conv1d(384, 768, 3, padding=1, bias=False),
-            nn.BatchNorm1d(768),
-            nn.ReLU(inplace=True),
-            nn.Conv1d(768, 768, 3, padding=1, bias=False),
-            nn.BatchNorm1d(768),
-            nn.ReLU(inplace=True),
-            nn.MaxPool1d(2, stride=2),
-            nn.Dropout1d(0.5),
-            
-            # Stage 5
-            nn.Conv1d(768, 768, 3, padding=1, bias=False),
-            nn.BatchNorm1d(768),
-            nn.ReLU(inplace=True),
-            nn.Conv1d(768, 768, 3, padding=1, bias=False),
-            nn.BatchNorm1d(768),
-            nn.ReLU(inplace=True),
-            nn.AdaptiveAvgPool1d(1)
+        model_name = f"xcit_{xcit_version}" if not xcit_version.startswith("xcit_") else xcit_version
+        
+        self.backbone = timm.create_model(
+            model_name,
+            pretrained=False,
+            num_classes=num_classes,
+            in_chans=input_channels,
+            drop_path_rate=drop_path_rate,
+            drop_rate=drop_rate,
         )
         
-        self.classifier = nn.Sequential(
-            nn.Dropout(0.5),
-            nn.Linear(768, 2048),
-            nn.BatchNorm1d(2048),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.55),
-            
-            nn.Linear(2048, 1024),
-            nn.BatchNorm1d(1024),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.45),
-            
-            nn.Linear(1024, 512),
-            nn.BatchNorm1d(512),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.35),
-            
-            nn.Linear(512, num_classes)
-        )
+        W = self.backbone.num_features
+        
+        self.grouper = nn.Conv1d(W, num_classes, kernel_size=1)
+        
+        if ds_method == "downsample":
+            self.backbone.patch_embed = ConvDownSampler(input_channels, W, ds_rate)
+        elif ds_method == "chunk":
+            self.backbone.patch_embed = Chunker(input_channels, W, ds_rate)
+        else:
+            raise ValueError(f"Unsupported downsampling method: {ds_method}")
+        
+        self.backbone.head = nn.Identity()
+        
+        self._init_weights()
+        
+        total_params = sum(p.numel() for p in self.parameters())
+        print(f"[MODEL] XCiT1d ({xcit_version}) создана")
+        print(f"  Параметров: {total_params:,}")
+        print(f"  Dropout: {drop_rate}, DropPath: {drop_path_rate}")
+        print(f"  Метод понижения частоты: {ds_method} (x{ds_rate})")
     
-    def forward(self, x):
-        x = self.features(x)
-        x = x.view(x.size(0), -1)
-        x = self.classifier(x)
+    def _init_weights(self):
+        nn.init.kaiming_normal_(self.grouper.weight, mode='fan_out', nonlinearity='relu')
+        if self.grouper.bias is not None:
+            nn.init.constant_(self.grouper.bias, 0)
+    
+    def forward(self, x: Tensor) -> Tensor:
+        mdl = self.backbone
+        B = x.shape[0]
+        
+        x = self.backbone.patch_embed(x)
+        Hp, Wp = x.shape[-1], 1
+        
+        pos_encoding = mdl.pos_embed(B, Hp, Wp).reshape(B, -1, Hp).permute(0, 2, 1)
+        x = x.transpose(1, 2) + pos_encoding
+        
+        for blk in mdl.blocks:
+            x = blk(x, Hp, Wp)
+        
+        cls_tokens = mdl.cls_token.expand(B, -1, -1)
+        x = torch.cat((cls_tokens, x), dim=1)
+        
+        for blk in mdl.cls_attn_blocks:
+            x = blk(x)
+        
+        x = mdl.norm(x)
+        cls_token = x[:, 0, :].unsqueeze(-1)
+        x = self.grouper(cls_token).squeeze(-1)
+        
+        if x.dim() == 1:
+            x = x.unsqueeze(0)
+        
         return x
 
-# Функция для проверки параметров
-def print_model_summary(model, name="Model"):
-    """Печатает детальную информацию о модели."""
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+class ConvDownSampler(nn.Module):
+    def __init__(self, in_chans: int, embed_dim: int, ds_rate: int = 4):
+        super().__init__()
+        self.conv = nn.Conv1d(
+            in_channels=in_chans,
+            out_channels=embed_dim,
+            kernel_size=ds_rate * 2 + 1,
+            stride=ds_rate,
+            padding=ds_rate,
+            bias=False
+        )
+        self.bn = nn.BatchNorm1d(embed_dim)
+        self.act = nn.GELU()
     
-    # Детальный подсчет
-    conv_params = 0
-    linear_params = 0
-    bn_params = 0
+    def forward(self, x: Tensor) -> Tensor:
+        x = self.conv(x)
+        x = self.bn(x)
+        x = self.act(x)
+        return x
+
+class Chunker(nn.Module):
+    def __init__(self, in_chans: int, embed_dim: int, ds_rate: int = 4):
+        super().__init__()
+        self.ds_rate = ds_rate
+        self.embed = nn.Conv1d(in_chans, embed_dim, kernel_size=7, padding=3, bias=False)
+        self.bn = nn.BatchNorm1d(embed_dim)
+        self.act = nn.GELU()
+        self.pool = nn.AvgPool1d(kernel_size=ds_rate, stride=ds_rate)
     
-    for name_param, param in model.named_parameters():
-        if 'conv' in name_param:
-            conv_params += param.numel()
-        elif 'fc' in name_param or 'classifier' in name_param:
-            linear_params += param.numel()
-        elif 'bn' in name_param or 'norm' in name_param:
-            bn_params += param.numel()
+    def forward(self, x: Tensor) -> Tensor:
+        x = self.embed(x)
+        x = self.bn(x)
+        x = self.act(x)
+        x = self.pool(x)
+        return x
+
+class ModulationNet25M(nn.Module):
+    def __init__(self, num_classes=57):
+        super().__init__()
+        
+        self.model = XCiT1d(
+            input_channels=2,
+            num_classes=num_classes,
+            xcit_version="small_12_p16_224",
+            drop_path_rate=0.15,
+            drop_rate=0.5,
+            ds_method="chunk",
+            ds_rate=4
+        )
+        
+    def forward(self, x):
+        return self.model(x)
+
+def create_training_plots(train_losses, train_accs, val_losses, val_accs, lr_history, save_path="training_plots"):
+    """Создает и сохраняет графики процесса обучения."""
     
-    print(f"\n{'='*60}")
-    print(f"{name} Summary:")
-    print(f"{'='*60}")
-    print(f"Total parameters:      {total_params:,} ({total_params/1e6:.1f}M)")
-    print(f"Trainable parameters:  {trainable_params:,}")
-    print(f"Non-trainable params:  {total_params - trainable_params:,}")
-    print(f"\nParameter distribution:")
-    print(f"  Convolutional layers: {conv_params:,} ({conv_params/total_params:.1%})")
-    print(f"  Linear layers:        {linear_params:,} ({linear_params/total_params:.1%})")
-    print(f"  BatchNorm layers:     {bn_params:,} ({bn_params/total_params:.1%})")
+    os.makedirs(save_path, exist_ok=True)
+    epochs = range(1, len(train_losses) + 1)
     
-    return total_params
+    plt.figure(figsize=(15, 10))
+    
+    # 1. График потерь
+    plt.subplot(2, 2, 1)
+    plt.plot(epochs, train_losses, 'b-', label='Train Loss', linewidth=2)
+    plt.plot(epochs, val_losses, 'r-', label='Val Loss', linewidth=2)
+    plt.xlabel('Эпохи')
+    plt.ylabel('Loss')
+    plt.title('Loss во время обучения')
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    
+    # 2. График точности
+    plt.subplot(2, 2, 2)
+    plt.plot(epochs, train_accs, 'b-', label='Train Accuracy', linewidth=2)
+    plt.plot(epochs, val_accs, 'r-', label='Val Accuracy', linewidth=2)
+    plt.xlabel('Эпохи')
+    plt.ylabel('Accuracy (%)')
+    plt.title('Accuracy во время обучения')
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    
+    # 3. Gap между train и val
+    plt.subplot(2, 2, 3)
+    if len(train_accs) == len(val_accs):
+        gaps = [train_accs[i] - val_accs[i] for i in range(len(train_accs))]
+        plt.plot(epochs, gaps, 'g-', linewidth=2)
+        plt.axhline(y=0, color='k', linestyle='--', alpha=0.3)
+        plt.xlabel('Эпохи')
+        plt.ylabel('Gap (%)')
+        plt.title('Разрыв между Train и Val Accuracy')
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+    
+    # 4. Learning Rate
+    plt.subplot(2, 2, 4)
+    plt.plot(range(1, len(lr_history) + 1), lr_history, 'purple', linewidth=2)
+    plt.xlabel('Эпохи')
+    plt.ylabel('Learning Rate')
+    plt.title('Изменение Learning Rate')
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    
+    plt.savefig(f"{save_path}/training_plots.png", dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    # 5. Сводный график всех метрик
+    fig, ax1 = plt.subplots(figsize=(12, 6))
+    
+    color = 'tab:blue'
+    ax1.set_xlabel('Эпохи')
+    ax1.set_ylabel('Loss', color=color)
+    ax1.plot(epochs, train_losses, color=color, alpha=0.6, label='Train Loss')
+    ax1.plot(epochs, val_losses, color=color, linestyle='--', label='Val Loss')
+    ax1.tick_params(axis='y', labelcolor=color)
+    ax1.legend(loc='upper left')
+    
+    ax2 = ax1.twinx()
+    color = 'tab:red'
+    ax2.set_ylabel('Accuracy (%)', color=color)
+    ax2.plot(epochs, train_accs, color=color, alpha=0.6, label='Train Acc')
+    ax2.plot(epochs, val_accs, color=color, linestyle='--', label='Val Acc')
+    ax2.tick_params(axis='y', labelcolor=color)
+    ax2.legend(loc='upper right')
+    
+    plt.title('Сводная статистика обучения')
+    plt.grid(True, alpha=0.3)
+    plt.savefig(f"{save_path}/summary_plot.png", dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    print(f" Графики сохранены в папку: {save_path}/")
+
+
+def save_training_report(train_losses, train_accs, val_losses, val_accs, lr_history):
+    """Создает текстовый отчет для курсовой работы."""
+    
+    if not train_accs or not val_accs:
+        print("  Нет данных для создания отчета")
+        return
+    
+    report = f"""
+ОТЧЕТ ПО ОБУЧЕНИЮ МОДЕЛИ КЛАССИФИКАЦИИ РАДИОСИГНАЛОВ
+======================================================
+
+1. ПАРАМЕТРЫ МОДЕЛИ
+-------------------
+- Архитектура: XCiT1d (small_12_p16_224)
+- Количество классов: 57 модуляций
+- Dropout: 0.5
+- DropPath (Stochastic Depth): 0.15
+- Метод понижения частоты: chunk (x4)
+- Learning Rate: начальный {lr_history[0]:.2e}, финальный {lr_history[-1]:.2e}
+
+2. РЕЗУЛЬТАТЫ ОБУЧЕНИЯ
+----------------------
+- Лучшая точность валидации: {max(val_accs):.2f}%
+- Финальная точность валидации: {val_accs[-1]:.2f}%
+- Финальная точность обучения: {train_accs[-1]:.2f}%
+- Разрыв между train и val (Gap): {train_accs[-1] - val_accs[-1]:.2f}%
+- Лучший Loss: {min(val_losses):.4f}
+- Количество эпох обучения: {len(train_accs)}
+
+3. АНАЛИЗ ПЕРЕОБУЧЕНИЯ
+-----------------------
+- Финальный разрыв (train-val): {train_accs[-1] - val_accs[-1]:.2f}%
+- Средний разрыв (последние 10 эпох): {np.mean([train_accs[i] - val_accs[i] for i in range(-min(10, len(train_accs)), 0)]) if len(train_accs) >= 10 else 0:.2f}%
+- Динамика обучения: {'Стабильная' if train_accs[-1] > train_accs[0] + 10 else 'Медленная'}
+
+4. СТАТИСТИКА ПО ЭПОХАМ
+------------------------
+"""
+    
+    # Добавляем таблицу с ключевыми эпохами
+    key_epochs = [1, 5, 10, 15, 20, 25, 30, 40, 50, 60, 70]
+    report += "\nЭпоха | Train Acc | Val Acc  | Loss   | LR\n"
+    report += "------|-----------|----------|--------|---------\n"
+    
+    for epoch in key_epochs:
+        if epoch - 1 < len(train_accs):
+            idx = epoch - 1
+            report += f"{epoch:5d} | {train_accs[idx]:8.2f}% | {val_accs[idx]:8.2f}% | {train_losses[idx]:6.4f} | {lr_history[idx]:.2e}\n"
+    
+    # Сохраняем в файл
+    with open("training_report.txt", "w", encoding="utf-8") as f:
+        f.write(report)
+    
+    print(" Текстовый отчет сохранен в 'training_report.txt'")
 
 if __name__ == "__main__":
-    print("=== МОДЕЛИ НА 25 МЛН ПАРАМЕТРОВ ДЛЯ КЛАССИФИКАЦИИ МОДУЛЯЦИЙ ===")
+    print("=== ТЕСТИРОВАНИЕ МОДЕЛИ ===")
     
-    # Тестируем обе модели
-    models = [
-        ("ModulationNet25M", ModulationNet25M),
-        ("Compact25MNet", Compact25MNet)
-    ]
+    model = ModulationNet25M(num_classes=57)
+    total_params = sum(p.numel() for p in model.parameters())
     
-    for name, ModelClass in models:
-        print(f"\n\n{'-'*60}")
-        print(f"Testing: {name}")
-        print(f"{'-'*60}")
-        
-        model = ModelClass(num_classes=58)
-        total_params = print_model_summary(model, name)
-        
-        # Проверка forward pass
-        x = torch.randn(4, 2, 1024)
-        y = model(x)
-        print(f"\nForward pass test:")
-        print(f"  Input shape:  {x.shape}")
-        print(f"  Output shape: {y.shape}")
-        print(f"  Output range: [{y.min():.3f}, {y.max():.3f}]")
-        
-        # Проверка на GPU
-        if torch.cuda.is_available():
-            try:
-                model_gpu = ModelClass(num_classes=58).cuda()
-                x_gpu = torch.randn(8, 2, 1024).cuda()
-                y_gpu = model_gpu(x_gpu)
-                print(f"  GPU test (batch=8): OK")
-                
-                # Оценка памяти
-                gpu_memory = torch.cuda.memory_allocated() / 1024**2
-                print(f"  GPU memory: {gpu_memory:.1f} MB")
-            except Exception as e:
-                print(f"  GPU test failed: {str(e)[:50]}...")
-        
-        print(f"{'-'*60}")
+    print(f"Всего параметров: {total_params:,}")
+    
+    batch_size = 4
+    x = torch.randn(batch_size, 2, 1024)
+    y = model(x)
+    
+    print(f"Вход: {x.shape}")
+    print(f"Выход: {y.shape}")
+    
+    print("\n Модель готова к использованию!")

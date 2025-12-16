@@ -17,12 +17,10 @@ class SignalToTensorWithLabel:
         Выход: (data_tensor, label)
         """
         # 1. Извлекаем данные из Signal объекта
-        # У объекта Signal есть атрибут .data с numpy array
         signal_data = signal.data 
         
         # Проверяем, что данные получены
         if signal_data is None:
-            # Создаем fallback данные
             signal_data = np.zeros((1024,), dtype=np.complex64)
         
         # 2. Преобразуем в тензор PyTorch
@@ -62,7 +60,7 @@ class SignalToTensorWithLabel:
             except:
                 pass
         
-        # Способ 3: Fallback - используем modulation_list
+        # Способ 3: используем modulation_list
         if label == 0:
             # Пробуем определить класс по содержимому сигнала
             label = hash(str(signal_data.shape)) % len(self.modulation_list)

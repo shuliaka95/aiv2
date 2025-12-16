@@ -14,6 +14,7 @@ warnings.filterwarnings('ignore')
 
 from dataset import get_dataloaders
 from model import ModulationNet25M as MyCustomModel
+from model import create_training_plots, save_training_report 
 from config import TRAIN_CONFIG, MODEL_CONFIG, NUM_CLASSES, NUM_IQ_SAMPLES
 
 class VerboseReduceLROnPlateau(ReduceLROnPlateau):
@@ -30,13 +31,15 @@ class VerboseReduceLROnPlateau(ReduceLROnPlateau):
         new_lr = self.optimizer.param_groups[0]['lr']
         
         if new_lr != old_lr:
-            print(f"  ↻ Learning rate изменен: {old_lr:.2e} → {new_lr:.2e}")
+            print(f"   Learning rate изменен: {old_lr:.2e} → {new_lr:.2e}")
 
 def train_model():
     """Мощный пайплайн обучения с защитой от переобучения."""
     device = TRAIN_CONFIG['device']
     epochs = TRAIN_CONFIG['num_epochs']
     model_save_path = MODEL_CONFIG['model_path']
+    
+    lr_history = []
     
     print(f"=== ОБУЧЕНИЕ МОЩНОЙ МОДЕЛИ НА {NUM_CLASSES} КЛАССОВ ===")
     print(f"Устройство: {device}")
@@ -170,7 +173,7 @@ def train_model():
     ]
     
     print("\n" + "="*70)
-    print("🎯 CURRICULUM LEARNING ПЛАН:")
+    print(" CURRICULUM LEARNING ПЛАН:")
     print("="*70)
     for phase in curriculum_phases:
         print(f"{phase['name']}:")
@@ -211,7 +214,7 @@ def train_model():
                     current_phase_found = True
                     
                     print(f"\n{'='*70}")
-                    print(f"🚀 ПЕРЕХОД НА: {current_phase['name']}")
+                    print(f" ПЕРЕХОД НА: {current_phase['name']}")
                     print(f"  Уровень шума: {current_phase['impairment']}")
                     print(f"  Шагов/эпоху: {current_phase['steps']:,}")
                     print(f"  Эпохи: {phase['start_epoch']+1}-{phase['end_epoch']+1}")
@@ -242,7 +245,7 @@ def train_model():
             elif epoch < curriculum_phases[0]['start_epoch']:
                 current_phase_idx = 0
             current_phase = curriculum_phases[current_phase_idx]
-            print(f"⚠️  Эпоха {epoch+1} вне диапазона фаз, использую {current_phase['name']}")
+            print(f"  Эпоха {epoch+1} вне диапазона фаз, использую {current_phase['name']}")
         
         # Получаем параметры текущей фазы
         phase_steps = current_phase['steps']
@@ -337,6 +340,7 @@ def train_model():
         val_accs.append(val_acc)
         
         scheduler_plateau.step(val_acc)
+        lr_history.append(optimizer.param_groups[0]['lr'])
         
         # ===== ВЫВОД СТАТИСТИКИ =====
         print(f"\n{'='*70}")
@@ -364,15 +368,15 @@ def train_model():
                 'impairment': current_phase['impairment']
             }, model_save_path)
             
-            print(f"  💾 Сохранена лучшая модель (Acc: {val_acc:.2f}%, Phase: {current_phase_idx+1})")
+            print(f"   Сохранена лучшая модель (Acc: {val_acc:.2f}%, Phase: {current_phase_idx+1})")
         else:
             patience_counter += 1
-            print(f"  ⏳ Без улучшений: {patience_counter}/{max_patience}")
+            print(f"   Без улучшений: {patience_counter}/{max_patience}")
         
         # ===== РАННЯЯ ОСТАНОВКА =====
         if patience_counter >= max_patience:
             print(f"\n{'='*70}")
-            print(f"⚠️  РАННЯЯ ОСТАНОВКА на эпохе {epoch+1}")
+            print(f"  РАННЯЯ ОСТАНОВКА на эпохе {epoch+1}")
             print(f"   Фаза: {current_phase['name']}")
             print(f"   Лучшая точность: {best_val_acc:.2f}%")
             break
@@ -386,17 +390,44 @@ def train_model():
     
     # ===== ФИНАЛЬНАЯ СТАТИСТИКА =====
     print(f"\n{'='*70}")
-    print(f"🏁 ОБУЧЕНИЕ ЗАВЕРШЕНО")
+    print(f" ОБУЧЕНИЕ ЗАВЕРШЕНО")
     print(f"Всего эпох: {len(train_accs)}")
     print(f"Лучшая точность: {best_val_acc:.2f}%")
     print(f"Лучший Loss: {best_val_loss:.4f}")
     print(f"{'='*70}")
     
+    # ===== СОЗДАНИЕ ГРАФИКОВ ДЛЯ КУРСОВОЙ =====
+    print("\n Создание графиков процесса обучения...")
+    
+    try:
+        # Создаем графики
+        create_training_plots(
+            train_losses, train_accs, 
+            val_losses, val_accs, 
+            lr_history,
+            save_path="training_plots"
+        )
+        
+        # Создаем текстовый отчет
+        save_training_report(
+            train_losses, train_accs,
+            val_losses, val_accs,
+            lr_history
+        )
+        
+        print(" Графики и отчет сохранены в папке 'training_plots/'")
+        print(" Отчет сохранен в 'training_report.txt'")
+        
+    except Exception as e:
+        print(f"  Ошибка при создании графиков: {e}")
+        print("Продолжаем без графиков...")
+    
+    
     # Загрузка лучшей модели для финального теста
     if os.path.exists(model_save_path):
         checkpoint = torch.load(model_save_path)
         model.load_state_dict(checkpoint['model_state_dict'])
-        print(f"\n📦 Загружена лучшая модель:")
+        print(f"\n Загружена лучшая модель:")
         print(f"  Эпоха: {checkpoint['epoch']+1}")
         print(f"  Фаза: {checkpoint['phase']}")
         print(f"  Accuracy: {checkpoint['val_acc']:.2f}%")
@@ -410,12 +441,12 @@ def train_model():
         print(f"Средний разрыв (последние 10 эпох): {avg_gap:.2f}%")
         
         if avg_gap > 15:
-            print("  ⚠️  СИЛЬНОЕ ПЕРЕОБУЧЕНИЕ!")
+            print("    СИЛЬНОЕ ПЕРЕОБУЧЕНИЕ!")
             print("  Рекомендация: Увеличьте dropout, уменьшите модель")
         elif avg_gap > 8:
-            print("  ⚠️  УМЕРЕННОЕ ПЕРЕОБУЧЕНИЕ")
+            print("    УМЕРЕННОЕ ПЕРЕОБУЧЕНИЕ")
         else:
-            print("  ✓ ХОРОШАЯ ОБОБЩАЮЩАЯ СПОСОБНОСТЬ")
+            print("   ХОРОШАЯ ОБОБЩАЮЩАЯ СПОСОБНОСТЬ")
     
     # Загрузка лучшей модели для теста
     if os.path.exists(model_save_path):
