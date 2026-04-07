@@ -1,419 +1,425 @@
 """
-Dataset module for RF signal modulation classification using TorchSig 2.0
-Supports large-scale training with HDF5 caching
+Dataset для TorchSig 2.0.
+- Кэш в .npy (без h5py)
+    <stem>_data.npy   : float32 [N, 2, num_iq_samples]
+    <stem>_labels.npy : int32   [N]
+- Файлы создаются СРАЗУ на диске через memmap (как HDF5)
+- Train и Val генерируются ОТДЕЛЬНО — разные файлы, независимые данные
+- Аугментации только на train
+- Визуализация созвездий после генерации
 """
 
 import os
 import torch
 import numpy as np
-import h5py
-import pickle
 import matplotlib
-matplotlib.use('Agg')  # Non-interactive backend
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
+import gc
+
 import config.settings as cfg
 
-# TorchSig 2.0 imports
 try:
     from torchsig.datasets.datasets import TorchSigIterableDataset
     from torchsig.datasets.dataset_metadata import DatasetMetadata
     TORCHSIG_AVAILABLE = True
+    print("[✓] TorchSig 2.0 успешно импортирован")
 except ImportError as e:
     TORCHSIG_AVAILABLE = False
-    print(f"ERROR: TorchSig 2.0 not available: {e}")
-    print("Install with: pip install torchsig")
+    print(f"[✗] TorchSig 2.0 не найден: {e}")
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# SignalTransform
+# ──────────────────────────────────────────────────────────────────────────────
 
 class SignalTransform:
-    """Transform TorchSig Signal objects to tensors with labels"""
-    
     def __init__(self, modulation_list):
-        self.modulation_list = modulation_list
-        self.mod_to_idx = {mod: idx for idx, mod in enumerate(modulation_list)}
-        
-    def __call__(self, signal):
-        """
-        Args:
-            signal: TorchSig Signal object
-            
-        Returns:
-            tuple: (data_tensor [2, N], label)
-        """
-        # Extract IQ data
-        signal_data = signal.data if hasattr(signal, 'data') else signal.iq_data
-        
-        if signal_data is None:
-            signal_data = np.zeros((cfg.NUM_IQ_SAMPLES,), dtype=np.complex64)
-        
-        # Convert to [2, N] tensor (I and Q channels)
-        if isinstance(signal_data, np.ndarray):
-            if np.iscomplexobj(signal_data):
-                data_c = torch.from_numpy(signal_data)
-                real = data_c.real.float()
-                imag = data_c.imag.float()
-                data_tensor = torch.stack([real, imag], dim=0)
-            else:
-                data_tensor = torch.from_numpy(signal_data).float()
-                if data_tensor.dim() == 1:
-                    data_tensor = data_tensor.view(2, -1)
-        else:
-            data_tensor = signal_data
-        
-        # Extract label
-        label = 0
-        class_name = None
-        
-        # Try component_signals
-        if hasattr(signal, 'component_signals') and signal.component_signals:
-            try:
-                comp = signal.component_signals[0]
-                if hasattr(comp, 'metadata') and comp.metadata:
-                    if hasattr(comp.metadata, 'class_name'):
-                        class_name = comp.metadata.class_name
-                    elif hasattr(comp.metadata, 'class_idx'):
-                        label = int(comp.metadata.class_idx) % len(self.modulation_list)
-            except:
-                pass
-        
-        # Try signal.metadata
-        if class_name is None and hasattr(signal, 'metadata') and signal.metadata:
-            try:
-                if hasattr(signal.metadata, 'class_name'):
-                    class_name = signal.metadata.class_name
-                elif hasattr(signal.metadata, 'class_idx'):
-                    label = int(signal.metadata.class_idx) % len(self.modulation_list)
-            except:
-                pass
-        
-        # Convert class name to index
-        if class_name is not None:
-            if isinstance(class_name, list):
-                class_name = class_name[0]
-            if class_name in self.mod_to_idx:
-                label = self.mod_to_idx[class_name]
-        
-        return data_tensor, label
+        self.mod_to_idx = {m: i for i, m in enumerate(modulation_list)}
 
+    _debug_printed = False
+
+    def __call__(self, signal):
+        if not SignalTransform._debug_printed:
+            SignalTransform._debug_printed = True
+            try:
+                print("\n[DEBUG] type(signal):", type(signal).__name__)
+                print("[DEBUG] attrs:", [a for a in dir(signal) if not a.startswith('_')])
+                for attr in ('iq_data', 'data', 'samples', 'metadata',
+                             'component_signals', 'class_name', 'label'):
+                    if hasattr(signal, attr):
+                        val = getattr(signal, attr)
+                        print(f"[DEBUG]   signal.{attr} = "
+                              f"{type(val).__name__}: {repr(val)[:200]}")
+                cs = getattr(signal, 'component_signals', None)
+                if cs is not None and len(cs) > 0:
+                    comp = cs[0]
+                    print("[DEBUG] component_signals[0] attrs:",
+                          [a for a in dir(comp) if not a.startswith('_')])
+                    meta = getattr(comp, 'metadata', None)
+                    if meta is not None:
+                        for a in dir(meta):
+                            if not a.startswith('_'):
+                                try:
+                                    print(f"[DEBUG]     metadata.{a} ="
+                                          f" {repr(getattr(meta, a))[:120]}")
+                                except Exception:
+                                    pass
+                print("[DEBUG] --- end ---\n")
+            except Exception as e:
+                print(f"[DEBUG] crashнул: {e}\n")
+
+        # ── IQ data ──────────────────────────────────────────────────────────
+        raw = getattr(signal, 'iq_data', None)
+        if raw is None: raw = getattr(signal, 'data',    None)
+        if raw is None: raw = getattr(signal, 'samples', None)
+        if raw is None: raw = np.zeros(cfg.NUM_IQ_SAMPLES, dtype=np.complex64)
+
+        if hasattr(raw, '__len__') and len(raw) != cfg.NUM_IQ_SAMPLES:
+            if len(raw) > cfg.NUM_IQ_SAMPLES:
+                raw = raw[:cfg.NUM_IQ_SAMPLES]
+            else:
+                pad = np.zeros(cfg.NUM_IQ_SAMPLES - len(raw), dtype=np.complex64)
+                raw = np.concatenate([np.asarray(raw), pad])
+
+        if isinstance(raw, np.ndarray) and np.iscomplexobj(raw):
+            c      = torch.from_numpy(raw.astype(np.complex64))
+            tensor = torch.stack([c.real, c.imag], dim=0)
+        else:
+            tensor = torch.from_numpy(np.asarray(raw, dtype=np.float32))
+            if tensor.dim() == 1:
+                tensor = tensor.view(2, -1)
+
+        # ── Label ─────────────────────────────────────────────────────────────
+        class_name = None
+        try:
+            cs = getattr(signal, 'component_signals', None)
+            if cs is not None and len(cs) > 0:
+                class_name = cs[0].metadata.class_name
+        except Exception:
+            pass
+        if class_name is None:
+            try:   class_name = signal.metadata.class_name
+            except Exception: pass
+        if class_name is None: class_name = getattr(signal, 'class_name', None)
+        if class_name is None: class_name = getattr(signal, 'label',      None)
+        if isinstance(class_name, (list, tuple)):
+            class_name = class_name[0] if len(class_name) > 0 else None
+
+        label = self.mod_to_idx.get(str(class_name), 0) if class_name is not None else 0
+        return tensor, label
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# NPY helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _npy_stem(impairment_level, snr_min, snr_max, num_samples, num_classes, split):
+    return (f"ts_{split}"
+            f"_lvl{int(impairment_level)}"
+            f"_snr{int(snr_min)}to{int(snr_max)}"
+            f"_n{num_samples}_c{num_classes}")
+
+
+def _npy_paths(cache_dir, stem):
+    return (os.path.join(cache_dir, f"{stem}_data.npy"),
+            os.path.join(cache_dir, f"{stem}_labels.npy"))
+
+
+def _npy_exists(cache_dir, stem):
+    dp, lp = _npy_paths(cache_dir, stem)
+    return os.path.exists(dp) and os.path.exists(lp)
+
+
+def _load_memmap_data(path, num_iq_samples):
+    """
+    Загружает data-файл созданный через np.memmap (float32, raw binary).
+    Форма: [N, 2, num_iq_samples]
+    """
+    raw  = np.memmap(path, dtype=np.float32, mode='r')
+    n    = raw.size // (2 * num_iq_samples)
+    return raw.reshape(n, 2, num_iq_samples)
+
+
+def _load_memmap_labels(path):
+    """
+    Загружает labels-файл созданный через np.memmap (int32, raw binary).
+    Форма: [N]
+    """
+    return np.memmap(path, dtype=np.int32, mode='r')
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Dataset
+# ──────────────────────────────────────────────────────────────────────────────
 
 class CachedTorchSigDataset(Dataset):
-    """Dataset with HDF5 caching for efficient data loading"""
-    
-    def __init__(self, h5_path, modulations, augment=False):
-        self.h5_path = h5_path
-        self.modulations = modulations
-        self.mod_to_idx = {mod: idx for idx, mod in enumerate(modulations)}
-        self.augment = augment
-        
-        with h5py.File(self.h5_path, 'r') as f:
-            self.length = len(f['data'])
-    
-    def apply_augmentations(self, data_tensor):
-        """Apply data augmentations to IQ signal [2, N]"""
-        
-        # Frequency shift
-        if np.random.rand() < 0.5:
-            freq_shift = np.random.uniform(-0.1, 0.1)
-            t = torch.arange(data_tensor.shape[1]).float()
-            phase = 2 * np.pi * freq_shift * t
-            rotation = torch.stack([torch.cos(phase), torch.sin(phase)])
-            i_new = rotation[0] * data_tensor[0] - rotation[1] * data_tensor[1]
-            q_new = rotation[1] * data_tensor[0] + rotation[0] * data_tensor[1]
-            data_tensor = torch.stack([i_new, q_new])
-        
-        # Time shift
-        if np.random.rand() < 0.5:
-            shift = np.random.randint(-data_tensor.shape[1]//4, data_tensor.shape[1]//4)
-            data_tensor = torch.roll(data_tensor, shifts=shift, dims=1)
-        
-        # Phase rotation
-        if np.random.rand() < 0.5:
-            phase_rot = np.random.uniform(0, 2*np.pi)
-            cos_p = np.cos(phase_rot)
-            sin_p = np.sin(phase_rot)
-            i_new = cos_p * data_tensor[0] - sin_p * data_tensor[1]
-            q_new = sin_p * data_tensor[0] + cos_p * data_tensor[1]
-            data_tensor = torch.stack([i_new, q_new])
-        
-        # Amplitude scaling
-        if np.random.rand() < 0.3:
-            scale = np.random.uniform(0.8, 1.2)
-            data_tensor = data_tensor * scale
-        
-        # Additional noise
-        if np.random.rand() < 0.3:
-            noise_power = 0.01 * torch.mean(data_tensor**2)
-            noise = torch.sqrt(noise_power/2) * torch.randn_like(data_tensor)
-            data_tensor = data_tensor + noise
-        
-        return data_tensor
-    
-    def __len__(self):
-        return self.length
-    
-    def __getitem__(self, idx):
-        with h5py.File(self.h5_path, 'r') as f:
-            data_bytes = f['data'][idx]
-            label = int(f['labels'][idx])
-        
-        data_tensor = pickle.loads(data_bytes.tobytes())
-        
-        if self.augment:
-            data_tensor = self.apply_augmentations(data_tensor)
-        
-        return data_tensor, torch.tensor(label, dtype=torch.long)
-
-
-def generate_torchsig_dataset(modulations, impairment_level, num_samples, num_iq_samples, snr_min, snr_max):
     """
-    Генерация датасета с использованием TorchSig 2.0 API и кэширование в HDF5.
-    
-    Args:
-        modulations (list): Список типов модуляций.
-        impairment_level (float): Уровень искажений (будет приведен к 0, 1 или 2).
-        num_samples (int): Количество генерируемых примеров.
-        num_iq_samples (int): Размер IQ-окна.
-        snr_min (float): Минимальный SNR в дБ.
-        snr_max (float): Максимальный SNR в дБ.
+    Читает из двух бинарных файлов созданных np.memmap.
+    Используем np.memmap для загрузки (не np.load — файлы без .npy заголовка).
+    .copy() обязателен: mmap read-only, torch не принимает.
+    """
+
+    def __init__(self, data_path, labels_path, modulations, augment=False):
+        self.modulations = modulations
+        self.augment     = augment
+        self.data        = _load_memmap_data(data_path, cfg.NUM_IQ_SAMPLES)
+        self.labels      = _load_memmap_labels(labels_path)
+        assert len(self.data) == len(self.labels), (
+            f"Mismatch: data {len(self.data)} vs labels {len(self.labels)}")
+
+    @staticmethod
+    def _augment(t):
+        N = t.shape[1]
+
+        if np.random.rand() < 0.7:
+            df   = np.random.uniform(-0.15, 0.15)
+            phi  = 2 * np.pi * df * torch.arange(N).float()
+            c, s = torch.cos(phi), torch.sin(phi)
+            t    = torch.stack([c*t[0] - s*t[1], s*t[0] + c*t[1]])
+
+        if np.random.rand() < 0.7:
+            shift = np.random.randint(-N // 3, N // 3)
+            t = torch.roll(t, shift, dims=1)
+
+        if np.random.rand() < 0.7:
+            a    = np.random.uniform(0, 2 * np.pi)
+            c, s = float(np.cos(a)), float(np.sin(a))
+            t    = torch.stack([c*t[0] - s*t[1], s*t[0] + c*t[1]])
+
+        if np.random.rand() < 0.6:
+            t = t * float(np.random.uniform(0.6, 1.4))
+
+        if np.random.rand() < 0.7:
+            sp  = t.pow(2).mean().clamp(min=1e-10)
+            snr = float(np.random.uniform(10, 30))
+            t   = t + torch.randn_like(t) * (sp / 10 ** (snr / 10)).sqrt()
+
+        return t
+
+    def __len__(self):
+        return len(self.labels)
+
+    def __getitem__(self, idx):
+        data  = torch.from_numpy(self.data[idx].copy())
+        label = torch.tensor(int(self.labels[idx]), dtype=torch.long)
+        if self.augment:
+            data = self._augment(data)
+        return data, label
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Визуализация
+# ──────────────────────────────────────────────────────────────────────────────
+
+def visualize_dataset(data_path, labels_path, modulations, snr_min, snr_max, tag=''):
+    num_classes = len(modulations)
+    print(f"[*] Визуализация ({tag}): {num_classes} классов…")
+    try:
+        # Используем memmap — файлы созданы без .npy заголовка
+        data   = _load_memmap_data(data_path, cfg.NUM_IQ_SAMPLES)
+        labels = _load_memmap_labels(labels_path)
+
+        collected = {}
+        for idx in np.random.permutation(len(labels)):
+            lbl = int(labels[idx])
+            if lbl not in collected:
+                collected[lbl] = data[idx].copy()
+            if len(collected) == num_classes:
+                break
+
+        found = len(collected)
+        print(f"    Найдено {found}/{num_classes} классов")
+
+        cols = 8
+        rows = (found + cols - 1) // cols
+        fig, axes = plt.subplots(rows, cols, figsize=(cols * 2.8, rows * 2.8))
+        axes = axes.flatten()
+
+        for plot_idx, label in enumerate(sorted(collected.keys())):
+            ax   = axes[plot_idx]
+            sig  = collected[label]
+            name = modulations[label]
+            ax.scatter(sig[0], sig[1], s=1, alpha=0.5, c='royalblue')
+            ax.set_aspect('equal')
+            ax.grid(True, alpha=0.2)
+            ax.set_title(name, fontsize=7, fontweight='bold')
+            ax.set_xticks([]); ax.set_yticks([])
+
+        for i in range(found, len(axes)):
+            axes[i].axis('off')
+
+        plt.suptitle(
+            f'Constellation Diagrams [{tag}] — SNR {snr_min:.0f}–{snr_max:.0f} dB',
+            fontsize=13, fontweight='bold')
+        plt.tight_layout()
+
+        out_dir  = os.path.dirname(data_path) or '.'
+        out_path = os.path.join(out_dir,
+            f'viz_{tag}_snr{int(snr_min)}to{int(snr_max)}.png')
+        plt.savefig(out_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"[✓] Визуализация: {out_path}")
+
+    except Exception as e:
+        print(f"[!] Ошибка визуализации: {e}")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Генерация + memmap кэш (файлы появляются СРАЗУ на диске)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def generate_torchsig_dataset(modulations, impairment_level, num_samples,
+                               num_iq_samples, snr_min, snr_max, split='train'):
+    """
+    Генерирует датасет TorchSig и сохраняет через np.memmap.
+    Файлы *_data.npy и *_labels.npy появляются на диске СРАЗУ
+    и растут по мере генерации — как HDF5.
+
+    Возвращает: (data_path, labels_path)
     """
     if not TORCHSIG_AVAILABLE:
-        raise ImportError("TorchSig 2.0 is required but not installed")
-    
-    # Приводим уровень к допустимому в TorchSig диапазону [0, 2]
-    # 0 - чистый, 1 - кабель, 2 - беспроводной канал
-    ts_level = int(min(max(impairment_level, 0), 2))
-    
+        raise ImportError("TorchSig 2.0 не установлен!")
+
+    ts_level  = int(np.clip(impairment_level, 0, 2))
     cache_dir = cfg.DATASET_CONFIG['save_dir']
     os.makedirs(cache_dir, exist_ok=True)
-    
-    # Формируем имя файла так, чтобы оно зависело от SNR и уровня
-    # Это важно: если SNR изменится, должен создаться новый кэш!
-    cache_filename = f"ts_lvl{ts_level}_snr{int(snr_min)}to{int(snr_max)}_n{num_samples}.h5"
-    cache_path = os.path.join(cache_dir, cache_filename)
-    classes_path = os.path.join(cache_dir, f"classes_c{len(modulations)}.pkl")
-    
-    if os.path.exists(cache_path):
-        print(f"[*] Найден кэшированный датасет: {cache_filename}")
-        return cache_path, classes_path
-    
-    print(f"\n[!] Генерация нового датасета TorchSig:")
-    print(f"  Модуляций: {len(modulations)}")
-    print(f"  Примеров: {num_samples}")
-    print(f"  Уровень (TorchSig Level): {ts_level}")
-    print(f"  Диапазон SNR: {snr_min:.1f} - {snr_max:.1f} dB")
-    
-    sample_rate = 200e3
-    # Здесь используется ваш класс трансформации
-    transform = SignalTransform(modulations)
-    
-    # Создание метаданных TorchSig 2.0
-    metadata = DatasetMetadata(
-        sample_rate=sample_rate,
+
+    stem                   = _npy_stem(ts_level, snr_min, snr_max,
+                                       num_samples, len(modulations), split)
+    data_path, labels_path = _npy_paths(cache_dir, stem)
+
+    if _npy_exists(cache_dir, stem):
+        print(f"[✓] Кэш [{split}] найден: {stem}")
+        return data_path, labels_path
+
+    print(f"\n{'='*70}")
+    print(f" ГЕНЕРАЦИЯ [{split.upper()}] ДАТАСЕТА")
+    print(f"{'='*70}")
+    print(f"  Модуляций: {len(modulations)}  |  Сэмплов: {num_samples:,}")
+    print(f"  Level: {ts_level}  |  SNR: {snr_min}–{snr_max} dB")
+    print(f"  Файлы появятся на диске СРАЗУ (memmap)")
+    print(f"{'='*70}\n")
+
+    sr   = 200e3
+    meta = DatasetMetadata(
+        sample_rate=sr,
         num_iq_samples_dataset=num_iq_samples,
         fft_size=256,
-        num_signals_min=1,
-        num_signals_max=1,
-        snr_db_min=snr_min,
-        snr_db_max=snr_max,
-        signal_duration_min=0.9 * num_iq_samples / sample_rate,
-        signal_duration_max=1.0 * num_iq_samples / sample_rate,
-        signal_bandwidth_min=sample_rate / 4,
-        signal_bandwidth_max=sample_rate / 2,
+        num_signals_min=1, num_signals_max=1,
+        snr_db_min=snr_min,  snr_db_max=snr_max,
+        signal_duration_min=0.9 * num_iq_samples / sr,
+        signal_duration_max=1.0 * num_iq_samples / sr,
+        signal_bandwidth_min=sr / 4, signal_bandwidth_max=sr / 2,
         cochannel_overlap_probability=0,
         class_list=modulations,
-        level=ts_level, 
+        level=ts_level,
     )
-    
-    # Инициализация итерируемого датасета
-    dataset = TorchSigIterableDataset(
-        dataset_metadata=metadata,
-        transforms=[transform],
-    )
-    
-    print(f"Запись в HDF5: {cache_path}...")
-    
-    with h5py.File(cache_path, 'w') as f:
-        # vlen=np.dtype('uint8') для хранения сериализованных pickle данных
-        dtype = h5py.special_dtype(vlen=np.dtype('uint8'))
-        h5_data = f.create_dataset('data', (num_samples,), dtype=dtype)
-        h5_labels = f.create_dataset('labels', (num_samples,), dtype='i4')
-        
-        iterator = iter(dataset)
-        
-        for i in tqdm(range(num_samples), desc="Генерация"):
-            try:
-                data_tensor, label = next(iterator)
-            except StopIteration:
-                iterator = iter(dataset)
-                data_tensor, label = next(iterator)
-            
-            # Сериализуем тензор для записи в HDF5
-            data_bytes = pickle.dumps(data_tensor)
-            h5_data[i] = np.frombuffer(data_bytes, dtype='uint8')
-            h5_labels[i] = int(label)
-    
-    # Сохраняем список классов
-    with open(classes_path, 'wb') as f:
-        pickle.dump(modulations, f)
-    
-    print(f"[+] Датасет успешно сохранен.\n")
-    
-    return cache_path, classes_path
 
-def get_dataloaders(batch_size, impairment_level=0, snr_min=20.0, snr_max=30.0, train_split=0.8, augment_train=True):
+    ds = TorchSigIterableDataset(dataset_metadata=meta,
+                                  transforms=[SignalTransform(modulations)])
+    it = iter(ds)
+
+    print(f"[*] Создаём файлы на диске (memmap)…")
+    buf_data = np.memmap(
+        data_path, dtype=np.float32, mode='w+',
+        shape=(num_samples, 2, num_iq_samples))
+    buf_labels = np.memmap(
+        labels_path, dtype=np.int32, mode='w+',
+        shape=(num_samples,))
+    print(f"[✓] Файлы созданы:")
+    print(f"    {data_path}")
+    print(f"    {labels_path}")
+    print(f"[*] Генерация сэмплов…\n")
+
+    FLUSH_EVERY = 50_000
+
+    for i in tqdm(range(num_samples), desc=f"Генерация [{split}]", unit="samples"):
+        try:
+            tensor, label = next(it)
+        except StopIteration:
+            it = iter(ds)
+            tensor, label = next(it)
+
+        buf_data[i]   = tensor.numpy()
+        buf_labels[i] = int(label)
+
+        if (i + 1) % FLUSH_EVERY == 0:
+            buf_data.flush()
+            buf_labels.flush()
+            gc.collect()
+
+    buf_data.flush()
+    buf_labels.flush()
+    del buf_data, buf_labels
+    gc.collect()
+
+    print(f"\n[✓] [{split}] генерация завершена")
+    print(f"    {data_path}")
+    print(f"    {labels_path}\n")
+
+    return data_path, labels_path
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# DataLoaders
+# ──────────────────────────────────────────────────────────────────────────────
+
+def get_dataloaders(batch_size, impairment_level=0, snr_min=20.0, snr_max=40.0,
+                    augment_train=True):
     """
-    Создание загрузчиков данных для обучения и валидации.
-    
-    Args:
-        batch_size: размер батча
-        impairment_level: уровень искажений (0, 1, 2)
-        snr_min: минимальный SNR для генерации
-        snr_max: максимальный SNR для генерации
-        train_split: доля данных для обучения
-        augment_train: применять ли аугментации к тренировочным данным
+    Возвращает (train_loader, val_loader, modulations).
+    Train и Val генерируются независимо — честная валидация.
     """
     modulations = cfg.SELECTED_MODS
-    num_samples = cfg.DATASET_CONFIG['num_samples']
-    num_iq_samples = cfg.NUM_IQ_SAMPLES
-    
-    print(f"\nDataLoader Creation (2026 Edition)")
+    total       = cfg.DATASET_CONFIG['num_samples']
+    n_phases    = len(cfg.CURRICULUM_PHASES)
+    val_ratio   = cfg.DATASET_CONFIG['val_ratio']
+
+    train_n = total // n_phases
+    val_n   = int(train_n * val_ratio)
+
+    print(f"\n{'='*70}")
+    print(" СОЗДАНИЕ DATALOADERS")
     print(f"{'='*70}")
-    print(f"  Level: {impairment_level} | SNR: {snr_min} to {snr_max} dB")
-    
-    # ТЕПЕРЬ ПЕРЕДАЕМ ВСЕ ПАРАМЕТРЫ В ГЕНЕРАТОР
-    cache_path, classes_path = generate_torchsig_dataset(
-        modulations=modulations, 
-        impairment_level=impairment_level, 
-        num_samples=num_samples, 
-        num_iq_samples=num_iq_samples,
-        snr_min=snr_min,
-        snr_max=snr_max
-    )
-    
-    # Создаем объекты датасета на основе кэша
-    full_dataset_train = CachedTorchSigDataset(cache_path, modulations, augment=augment_train)
-    full_dataset_val = CachedTorchSigDataset(cache_path, modulations, augment=False)
-    
-    total_size = len(full_dataset_train)
-    train_size = int(train_split * total_size)
-    
-    # Фиксируем seed для воспроизводимого разделения на train/val
-    generator = torch.Generator().manual_seed(cfg.SEED)
-    indices = torch.randperm(total_size, generator=generator).tolist()
-    train_indices = indices[:train_size]
-    val_indices = indices[train_size:]
-    
-    train_dataset = torch.utils.data.Subset(full_dataset_train, train_indices)
-    val_dataset = torch.utils.data.Subset(full_dataset_val, val_indices)
-    
-    num_workers = cfg.DATASET_CONFIG.get('num_workers', 4)
-    pin_memory = cfg.DATASET_CONFIG.get('pin_memory', True)
-    prefetch_factor = cfg.DATASET_CONFIG.get('prefetch_factor', 4) if num_workers > 0 else None
-    
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        persistent_workers=True if num_workers > 0 else False,
-        prefetch_factor=prefetch_factor,
-        drop_last=True
-    )
-    
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        persistent_workers=True if num_workers > 0 else False,
-        prefetch_factor=prefetch_factor,
-    )
-    
-    print(f"  Train: {len(train_dataset)} samples ({len(train_loader)} batches)")
-    print(f"  Val:   {len(val_dataset)} samples ({len(val_loader)} batches)")
+    print(f"  Train: {train_n:,} сэмплов"
+          f" (Level {impairment_level}, SNR {snr_min:.0f}–{snr_max:.0f} dB)")
+    print(f"  Val:   {val_n:,} сэмплов  (независимая генерация)")
     print(f"{'='*70}\n")
-    
+
+    train_data, train_labels = generate_torchsig_dataset(
+        modulations, impairment_level, train_n,
+        cfg.NUM_IQ_SAMPLES, snr_min, snr_max, split='train')
+
+    val_data, val_labels = generate_torchsig_dataset(
+        modulations, impairment_level, val_n,
+        cfg.NUM_IQ_SAMPLES, snr_min, snr_max, split='val')
+
+    ds_train = CachedTorchSigDataset(
+        train_data, train_labels, modulations, augment=augment_train)
+    ds_val   = CachedTorchSigDataset(
+        val_data, val_labels, modulations, augment=False)
+
+    nw      = cfg.DATASET_CONFIG['num_workers']
+    pin     = cfg.DATASET_CONFIG['pin_memory'] and torch.cuda.is_available()
+    persist = nw > 0
+
+    train_loader = DataLoader(
+        ds_train, batch_size=batch_size, shuffle=True,
+        num_workers=nw, pin_memory=pin,
+        persistent_workers=persist, drop_last=True,
+        prefetch_factor=2 if nw > 0 else None)
+
+    val_loader = DataLoader(
+        ds_val, batch_size=batch_size, shuffle=False,
+        num_workers=nw, pin_memory=pin,
+        persistent_workers=persist,
+        prefetch_factor=2 if nw > 0 else None)
+
+    print(f"  Train: {len(ds_train):,} сэмплов → {len(train_loader)} батчей")
+    print(f"  Val:   {len(ds_val):,} сэмплов  → {len(val_loader)} батчей")
+    print(f"{'='*70}\n")
+
     return train_loader, val_loader, modulations
-
-
-
-def visualize_dataset_samples(h5_path, modulations, impairment_level, num_samples=16):
-    """
-    Visualize constellation diagrams from generated dataset
-    
-    Args:
-        h5_path: path to HDF5 cache file
-        modulations: list of modulation types
-        impairment_level: impairment level
-        num_samples: number of samples to visualize
-    """
-    print(f"Generating dataset visualization...")
-    
-    try:
-        # Load samples
-        with h5py.File(h5_path, 'r') as f:
-            total_samples = len(f['data'])
-            indices = np.random.choice(total_samples, min(num_samples, total_samples), replace=False)
-            
-            samples = []
-            labels = []
-            for idx in indices:
-                data_bytes = f['data'][idx]
-                label = int(f['labels'][idx])
-                data_tensor = pickle.loads(data_bytes.tobytes())
-                samples.append(data_tensor.numpy())
-                labels.append(label)
-        
-        # Create visualization
-        cols = 4
-        rows = (num_samples + cols - 1) // cols
-        fig, axes = plt.subplots(rows, cols, figsize=(20, rows * 4))
-        axes = axes.flatten() if num_samples > 1 else [axes]
-        
-        for idx, (signal, label) in enumerate(zip(samples, labels)):
-            if idx >= num_samples:
-                break
-            
-            ax = axes[idx]
-            class_name = modulations[label]
-            
-            i_signal = signal[0]
-            q_signal = signal[1]
-            
-            ax.scatter(i_signal, q_signal, s=2, alpha=0.4, c='blue')
-            ax.set_aspect('equal')
-            ax.grid(True, alpha=0.3)
-            ax.set_xlabel('I', fontsize=9)
-            ax.set_ylabel('Q', fontsize=9)
-            ax.set_title(f'{class_name.upper()}', fontweight='bold', fontsize=11)
-            ax.tick_params(labelsize=8)
-            
-            max_val = max(np.abs(i_signal).max(), np.abs(q_signal).max())
-            ax.set_xlim(-max_val*1.1, max_val*1.1)
-            ax.set_ylim(-max_val*1.1, max_val*1.1)
-        
-        # Hide unused subplots
-        for idx in range(num_samples, len(axes)):
-            axes[idx].axis('off')
-        
-        snr_min = (impairment_level - 1.0) * 10
-        snr_max = snr_min + 10
-        plt.suptitle(f'Dataset Constellation Diagrams - Impairment {impairment_level:.1f} '
-                    f'(SNR {snr_min:.0f}-{snr_max:.0f} dB)',
-                    fontsize=14, fontweight='bold')
-        
-        plt.tight_layout()
-        
-        # Save
-        output_dir = os.path.dirname(h5_path)
-        filename = os.path.join(output_dir, f'dataset_visualization_lvl{impairment_level:.1f}.png')
-        plt.savefig(filename, dpi=150, bbox_inches='tight')
-        plt.close()
-        
-        print(f"Dataset visualization saved: {filename}\n")
-        
-    except Exception as e:
-        print(f"Warning: Could not generate visualization: {e}\n")
