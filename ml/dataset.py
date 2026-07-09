@@ -3,8 +3,8 @@ Dataset для TorchSig 2.0.
 - Кэш в .npy (без h5py)
     <stem>_data.npy   : float32 [N, 2, num_iq_samples]
     <stem>_labels.npy : int32   [N]
-- Файлы создаются СРАЗУ на диске через memmap (как HDF5)
-- Train и Val генерируются ОТДЕЛЬНО — разные файлы, независимые данные
+- Файлы создаются сразу на диске через memmap (как HDF5)
+- Train и Val генерируются отдельно
 - Аугментации только на train
 - Визуализация созвездий после генерации
 """
@@ -30,11 +30,7 @@ except ImportError as e:
     TORCHSIG_AVAILABLE = False
     print(f"[✗] TorchSig 2.0 не найден: {e}")
 
-
-# ──────────────────────────────────────────────────────────────────────────────
 # SignalTransform
-# ──────────────────────────────────────────────────────────────────────────────
-
 class SignalTransform:
     def __init__(self, modulation_list):
         self.mod_to_idx = {m: i for i, m in enumerate(modulation_list)}
@@ -71,7 +67,7 @@ class SignalTransform:
             except Exception as e:
                 print(f"[DEBUG] crashнул: {e}\n")
 
-        # ── IQ data ──────────────────────────────────────────────────────────
+        #IQ data 
         raw = getattr(signal, 'iq_data', None)
         if raw is None: raw = getattr(signal, 'data',    None)
         if raw is None: raw = getattr(signal, 'samples', None)
@@ -92,7 +88,7 @@ class SignalTransform:
             if tensor.dim() == 1:
                 tensor = tensor.view(2, -1)
 
-        # ── Label ─────────────────────────────────────────────────────────────
+        #Label
         class_name = None
         try:
             cs = getattr(signal, 'component_signals', None)
@@ -111,11 +107,7 @@ class SignalTransform:
         label = self.mod_to_idx.get(str(class_name), 0) if class_name is not None else 0
         return tensor, label
 
-
-# ──────────────────────────────────────────────────────────────────────────────
 # NPY helpers
-# ──────────────────────────────────────────────────────────────────────────────
-
 def _npy_stem(impairment_level, snr_min, snr_max, num_samples, num_classes, split):
     return (f"ts_{split}"
             f"_lvl{int(impairment_level)}"
@@ -151,9 +143,7 @@ def _load_memmap_labels(path):
     return np.memmap(path, dtype=np.int32, mode='r')
 
 
-# ──────────────────────────────────────────────────────────────────────────────
 # Dataset
-# ──────────────────────────────────────────────────────────────────────────────
 
 class CachedTorchSigDataset(Dataset):
     """
@@ -210,10 +200,8 @@ class CachedTorchSigDataset(Dataset):
         return data, label
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Визуализация
-# ──────────────────────────────────────────────────────────────────────────────
 
+# Визуализация
 def visualize_dataset(data_path, labels_path, modulations, snr_min, snr_max, tag=''):
     num_classes = len(modulations)
     print(f"[*] Визуализация ({tag}): {num_classes} классов…")
@@ -267,10 +255,7 @@ def visualize_dataset(data_path, labels_path, modulations, snr_min, snr_max, tag
         print(f"[!] Ошибка визуализации: {e}")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
 # Генерация + memmap кэш (файлы появляются СРАЗУ на диске)
-# ──────────────────────────────────────────────────────────────────────────────
-
 def generate_torchsig_dataset(modulations, impairment_level, num_samples,
                                num_iq_samples, snr_min, snr_max, split='train'):
     """
@@ -363,10 +348,7 @@ def generate_torchsig_dataset(modulations, impairment_level, num_samples,
     return data_path, labels_path
 
 
-# ──────────────────────────────────────────────────────────────────────────────
 # DataLoaders
-# ──────────────────────────────────────────────────────────────────────────────
-
 def get_dataloaders(batch_size, impairment_level=0, snr_min=20.0, snr_max=40.0,
                     augment_train=True):
     """
