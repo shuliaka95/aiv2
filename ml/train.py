@@ -31,7 +31,7 @@ from ml.model    import get_model, count_parameters
 from config.settings import TRAIN_CONFIG, CURRICULUM_PHASES
 
 
-# ── Утилиты ───────────────────────────────────────────────────────────────────
+# Утилиты 
 
 def clear_memory():
     gc.collect()
@@ -49,8 +49,7 @@ def mixup_criterion(criterion, pred, y_a, y_b, lam):
     return lam * criterion(pred, y_a) + (1 - lam) * criterion(pred, y_b)
 
 
-# ── Графики ───────────────────────────────────────────────────────────────────
-
+#Графики
 def save_plots(history, save_path='training_report.png'):
     fig = plt.figure(figsize=(20, 10))
     gs  = fig.add_gridspec(2, 3, hspace=0.3, wspace=0.3)
@@ -142,7 +141,7 @@ def save_confusion_matrix(all_preds, all_labels, class_names,
     print(f"[✓] Confusion matrix: {save_path}")
 
 
-# ── Curriculum ────────────────────────────────────────────────────────────────
+#Curriculum
 
 def get_current_phase(epoch):
     for phase in CURRICULUM_PHASES:
@@ -151,7 +150,7 @@ def get_current_phase(epoch):
     return CURRICULUM_PHASES[-1]
 
 
-# ── Валидация ─────────────────────────────────────────────────────────────────
+#Валидация
 
 def evaluate(model, loader, criterion, device, use_amp):
     model.eval()
@@ -178,7 +177,7 @@ def evaluate(model, loader, criterion, device, use_amp):
     return 100. * correct / total, loss_sum / len(loader), preds, labels
 
 
-# ── Сохранение чекпоинта ──────────────────────────────────────────────────────
+#Сохранение чекпоинта
 
 def save_checkpoint(path, model, optimizer, epoch, val_acc, class_names,
                     history, phase_name):
@@ -193,7 +192,7 @@ def save_checkpoint(path, model, optimizer, epoch, val_acc, class_names,
     }, path)
 
 
-# ── Основной цикл ─────────────────────────────────────────────────────────────
+#Основной цикл
 
 def train():
     device      = TRAIN_CONFIG['device']
@@ -240,7 +239,7 @@ def train():
     best_per_phase      = {}          # {phase_name: best_acc}
     patience_counter    = 0
 
-    # ── Первая фаза ───────────────────────────────────────────────────────────
+    # Первая фаза
     current_phase = get_current_phase(0)
     print(f"[*] Старт: {current_phase['name']}")
     print(f"    SNR {current_phase['snr_min']}–{current_phase['snr_max']} dB\n")
@@ -253,14 +252,14 @@ def train():
     )
     num_classes = len(class_names)
 
-    # ── Модель ────────────────────────────────────────────────────────────────
+    # Модель
     print("[*] Инициализация XCiT Small…")
     model = get_model(num_classes=num_classes, pretrained=False).to(device)
     total_p, train_p = count_parameters(model)
     print(f"    Параметров: {total_p:,}  (обучаемых {train_p:,})\n")
     clear_memory()
 
-    # ── Оптимизатор и scheduler ───────────────────────────────────────────────
+    #Оптимизатор и scheduler
     optimizer = optim.AdamW(
         model.parameters(),
         lr=TRAIN_CONFIG['learning_rate'],
@@ -291,11 +290,11 @@ def train():
     	model.load_state_dict(ckpt['model_state_dict'])
     	optimizer.load_state_dict(ckpt['optimizer_state_dict'])
     	
-    # ── Основной цикл эпох ────────────────────────────────────────────────────
+    #Основной цикл эпох
     start_epoch = START_EPOCH if (RESUME_FROM and os.path.exists(RESUME_FROM)) else 0
     for epoch in range(start_epoch, total_epochs):
 
-        # ── Смена фазы curriculum ─────────────────────────────────────────────
+        #Смена фазы curriculum
         new_phase = get_current_phase(epoch)
         if new_phase is not current_phase:
             print(f"\n{'='*70}")
@@ -333,7 +332,7 @@ def train():
             print(f"\n[*] Epoch {epoch+1}: включаем Mixup"
                   f" (alpha={mixup_alpha}) + Label Smoothing ({label_smoothing})\n")
 
-        # ── Train ─────────────────────────────────────────────────────────────
+        # Train
         model.train()
         loss_sum, correct, total = 0.0, 0, 0
         grad_norms = []
@@ -398,7 +397,7 @@ def train():
                 loss=f"{loss.item()*accum_steps:.4f}",
                 acc=f"{100.*correct/total:.2f}%")
 
-        # ── Validation ────────────────────────────────────────────────────────
+        # Validation
         val_acc, val_loss, all_preds, all_labels = evaluate(
             model, val_loader, criterion_clean, device, use_amp)
 
@@ -427,7 +426,7 @@ def train():
 
         scheduler.step()
 
-        # ── Сохранение: лучшая внутри текущей фазы ───────────────────────────
+        # Сохранение: лучшая внутри текущей фазы
         phase_improved = (phase_name not in best_per_phase or
                           val_acc > best_per_phase[phase_name])
 
@@ -450,7 +449,7 @@ def train():
         else:
             patience_counter += 1
 
-        # ── Сохранение: лучшая за всё обучение ───────────────────────────────
+        # Сохранение: лучшая за всё обучение
         if val_acc > best_val_acc_global:
             best_val_acc_global = val_acc
             save_checkpoint('best_model.pth', model, optimizer, epoch,
@@ -458,7 +457,7 @@ def train():
             print(f"   [★] NEW GLOBAL BEST: {best_val_acc_global:.2f}%"
                   f"  → best_model.pth")
 
-        # ── Early stopping ────────────────────────────────────────────────────
+        # Early stopping
         patience = TRAIN_CONFIG['early_stopping_patience']
         if patience_counter >= patience:
             print(f"\n[!] Early stopping — {patience} эпох без улучшения"
@@ -467,13 +466,13 @@ def train():
             # Если хочешь полный стоп — раскомментируй break:
             # break
 
-        # ── Периодические графики ─────────────────────────────────────────────
+        # Периодические графики
         if (epoch + 1) % 10 == 0:
             save_plots(history)
 
         clear_memory()
 
-    # ── Итог ──────────────────────────────────────────────────────────────────
+    # Итог
     print(f"\n{'='*70}")
     print(" ОБУЧЕНИЕ ЗАВЕРШЕНО")
     print(f"{'='*70}")
