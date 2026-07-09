@@ -7,7 +7,7 @@ import torch
 import numpy as np
 import random
 
-# ── Seed ──────────────────────────────────────────────────────────────────────
+#Seed
 SEED = 42
 random.seed(SEED)
 np.random.seed(SEED)
@@ -18,7 +18,7 @@ if torch.cuda.is_available():
     torch.backends.cudnn.benchmark     = True
 
 
-# ── Dataset ───────────────────────────────────────────────────────────────────
+#Dataset
 DATASET_CONFIG = {
     'num_samples':    5000000,   # делится на 3 фазы и на 57 классов без остатка
     'val_ratio':      0.20,         # 20% → отдельно сгенерированный val set
@@ -43,7 +43,7 @@ NUM_CLASSES    = len(SELECTED_MODS)    # 57
 NUM_IQ_SAMPLES = DATASET_CONFIG['num_iq_samples']
 
 
-# ── Auto batch ────────────────────────────────────────────────────────────────
+#Auto batch
 def _auto_batch():
     if not torch.cuda.is_available():
         return 8
@@ -54,7 +54,7 @@ def _auto_batch():
     return 128
 
 
-# ── Model ─────────────────────────────────────────────────────────────────────
+#Model
 MODEL_CONFIG = {
     'model_name':     'xcit_small_12_p16_224',
     'num_classes':    NUM_CLASSES,
@@ -63,7 +63,7 @@ MODEL_CONFIG = {
 }
 
 
-# ── Training ──────────────────────────────────────────────────────────────────
+#Training
 TRAIN_CONFIG = {
     'batch_size':                  _auto_batch(),
     'gradient_accumulation_steps': 4 if torch.cuda.is_available() else 8,
@@ -92,7 +92,7 @@ TRAIN_CONFIG = {
 }
 
 
-# ── Curriculum ────────────────────────────────────────────────────────────────
+# Curriculum 
 CURRICULUM_PHASES = [
     {
         'name':        'Phase 1: Clean signals (high SNR)',
@@ -112,7 +112,7 @@ CURRICULUM_PHASES = [
 ]
 
 
-# ── Info ──────────────────────────────────────────────────────────────────────
+# Info 
 def print_config():
     total     = DATASET_CONFIG['num_samples']
     n_phases  = len(CURRICULUM_PHASES)
